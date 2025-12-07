@@ -1,8 +1,11 @@
-// src/App.jsx
 import React, { useState, useEffect } from 'react';
 import { db } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Plus, Maximize, ArrowLeft, Eye, EyeOff, Trash2, Save, Edit, X } from 'lucide-react';
+import { Plus, Maximize, ArrowLeft, Eye, EyeOff, Trash2, Save, Edit, X, RefreshCw } from 'lucide-react';
+
+// --- 版本控制 ---
+// 每次更新代码时，手动修改这里，界面底部会自动显示
+const APP_VERSION = "v1.2.0 (2025.12.08)";
 
 // --- 工具函数 ---
 const fileToBase64 = (file) => new Promise((resolve, reject) => {
@@ -14,7 +17,7 @@ const fileToBase64 = (file) => new Promise((resolve, reject) => {
 
 // --- 主应用组件 ---
 function App() {
-  const [view, setView] = useState('list'); // 'list', 'add', 'detail'
+  const [view, setView] = useState('list'); 
   const [currentMistakeId, setCurrentMistakeId] = useState(null);
   const mistakes = useLiveQuery(() => db.mistakes.orderBy('createdAt').reverse().toArray());
   const currentMistake = useLiveQuery(
@@ -31,26 +34,26 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 text-gray-800">
+    <div className="min-h-screen bg-gray-100 text-gray-800 font-sans">
       {/* 顶部导航栏 */}
-      <nav className="bg-white shadow-sm p-4 sticky top-0 z-30 flex justify-between items-center">
+      <nav className="bg-white shadow-sm p-4 sticky top-0 z-30 flex justify-between items-center border-b border-gray-200">
         <div className="flex items-center gap-3">
           {view !== 'list' && (
-            <button onClick={() => setView('list')} className="p-2 -ml-2 hover:bg-gray-50 rounded-full transition">
-              <ArrowLeft size={24} className="text-gray-600" />
+            <button onClick={() => setView('list')} className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition text-gray-600">
+              <ArrowLeft size={22} />
             </button>
           )}
-          <h1 className="text-xl font-bold bg-gradient-to-r from-blue-700 to-blue-500 bg-clip-text text-transparent">
+          <h1 className="text-lg font-bold text-gray-900 tracking-tight">
             {view === 'list' ? '数学复盘' : view === 'add' ? '记录错题' : '错题详情'}
           </h1>
         </div>
-        <button onClick={toggleFullScreen} className="p-2 -mr-2 hover:bg-gray-50 rounded-full text-gray-500 transition">
-          <Maximize size={24} />
+        <button onClick={toggleFullScreen} className="p-2 -mr-2 hover:bg-gray-100 rounded-full text-gray-500">
+          <Maximize size={22} />
         </button>
       </nav>
 
       {/* 主内容区 */}
-      <main className="p-4 max-w-3xl mx-auto pb-24">
+      <main className="max-w-3xl mx-auto pb-24">
         {view === 'list' && (
           <MistakeList 
             mistakes={mistakes} 
@@ -75,60 +78,79 @@ function App() {
           />
         )}
       </main>
+
+      {/* 版本号显示 (仅在列表页显示) */}
+      {view === 'list' && (
+        <div className="text-center py-6 text-gray-400 text-xs">
+          当前版本: {APP_VERSION}
+        </div>
+      )}
     </div>
   );
 }
 
-// --- 1. 错题列表组件 (全新布局) ---
+// --- 1. 错题列表组件 (长条布局回归) ---
 function MistakeList({ mistakes, onAdd, onOpen }) {
-  if (!mistakes) return <div className="text-center mt-20 text-gray-400 animate-pulse">加载数据中...</div>;
+  if (!mistakes) return <div className="text-center mt-20 text-gray-400">加载数据中...</div>;
+  
   if (mistakes.length === 0) return (
-    <div className="flex flex-col items-center justify-center mt-20 text-gray-400">
-      <div className="mb-4 text-6xl">📝</div>
-      <p className="mb-6">还没有错题，开始你的复盘之旅吧！</p>
-      <button onClick={onAdd} className="bg-blue-600 text-white px-6 py-3 rounded-full font-bold shadow-lg hover:bg-blue-700 transition">
+    <div className="flex flex-col items-center justify-center mt-20 text-gray-400 p-4">
+      <div className="mb-4 p-4 bg-gray-200 rounded-full">📝</div>
+      <p className="mb-6 font-medium">还没有错题，开始积累吧</p>
+      <button onClick={onAdd} className="bg-blue-600 text-white px-6 py-2 rounded-full font-bold shadow-lg hover:bg-blue-700 transition text-sm">
         添加第一道题
       </button>
     </div>
   );
 
   return (
-    <div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {mistakes.map((item) => (
-          <div 
-            key={item.id} 
-            onClick={() => onOpen(item.id)}
-            className="relative h-64 bg-white rounded-2xl shadow-sm active:scale-[0.98] transition-all cursor-pointer overflow-hidden group"
-          >
-            {/* 图片占满整个容器 */}
+    <div className="p-4 space-y-3">
+      {mistakes.map((item) => (
+        <div 
+          key={item.id} 
+          onClick={() => onOpen(item.id)}
+          className="bg-white rounded-xl shadow-sm border border-gray-200 active:scale-[0.98] transition-transform cursor-pointer overflow-hidden flex h-28"
+        >
+          {/* 左侧：固定宽度的图片区域 */}
+          <div className="w-32 h-full bg-gray-100 flex-shrink-0 relative">
             {item.questionImg ? (
-              <img src={item.questionImg} alt="题目" className="absolute inset-0 w-full h-full object-cover transition-transform group-hover:scale-105" />
+              <img src={item.questionImg} alt="题目" className="absolute inset-0 w-full h-full object-cover" />
             ) : (
-              <div className="absolute inset-0 bg-gray-100 flex items-center justify-center text-gray-300">无图片</div>
+              <div className="flex items-center justify-center h-full text-gray-300 text-xs">无图</div>
             )}
-            
-            {/* 底部文本条：半透明背景，左标题右日期 */}
-            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/50 to-transparent p-4 pt-10 flex justify-between items-end text-white">
-              <h3 className="font-bold text-lg truncate mr-4 flex-1 text-shadow">{item.title || "无标题错题"}</h3>
-              <span className="text-xs opacity-80 font-medium whitespace-nowrap bg-black/30 px-2 py-1 rounded-full backdrop-blur-sm">
-                {new Date(item.createdAt).toLocaleDateString()}
-              </span>
+          </div>
+          
+          {/* 右侧：内容区域 */}
+          <div className="flex-1 p-3 flex flex-col justify-between min-w-0">
+            <div>
+              <h3 className="font-bold text-gray-800 text-sm line-clamp-2 leading-snug">
+                {item.title || "未命名错题"}
+              </h3>
+            </div>
+            <div className="flex justify-between items-end">
+               <span className="text-[10px] text-white bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full font-medium">
+                 {item.reflection ? '已复盘' : '待复盘'}
+               </span>
+               <span className="text-[10px] text-gray-400 font-medium">
+                 {new Date(item.createdAt).toLocaleDateString()}
+               </span>
             </div>
           </div>
-        ))}
-      </div>
+        </div>
+      ))}
+      
+      {/* 悬浮按钮 */}
       <button 
         onClick={onAdd}
-        className="fixed bottom-8 right-6 bg-blue-600 text-white p-4 rounded-full shadow-[0_4px_20px_rgba(37,99,235,0.4)] hover:bg-blue-700 active:scale-90 transition-all z-40"
+        className="fixed bottom-8 right-6 bg-blue-600 text-white p-4 rounded-full shadow-[0_4px_14px_rgba(37,99,235,0.4)] hover:bg-blue-700 active:scale-90 transition-all z-40"
       >
-        <Plus size={28} strokeWidth={2.5} />
+        <Plus size={26} strokeWidth={2.5} />
       </button>
     </div>
   );
 }
 
-// --- 2. 通用表单组件 (用于添加和编辑) ---
+// --- 2. 通用表单组件 ---
 function MistakeForm({ mode, initialData, onFinish, onCancel }) {
   const isEdit = mode === 'edit';
   const [title, setTitle] = useState(initialData?.title || '');
@@ -158,7 +180,7 @@ function MistakeForm({ mode, initialData, onFinish, onCancel }) {
       }
       onFinish();
     } catch (e) {
-      alert("保存失败，可能是图片太大。建议截图时截小一点。");
+      alert("保存失败，可能是图片太大。");
       console.error(e);
     } finally {
       setLoading(false);
@@ -166,48 +188,46 @@ function MistakeForm({ mode, initialData, onFinish, onCancel }) {
   };
 
   return (
-    <div className="bg-white p-5 rounded-2xl shadow-sm space-y-5 relative">
-      {isEdit && (
-        <button onClick={onCancel} className="absolute top-4 right-4 p-2 bg-gray-100 rounded-full text-gray-500 hover:bg-gray-200">
-          <X size={20} />
-        </button>
-      )}
-      <h2 className="text-xl font-bold text-gray-800">{isEdit ? '编辑错题' : '记录新错题'}</h2>
+    <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl p-4 sm:p-6 pb-20 space-y-5 relative">
+      <div className="flex justify-between items-center mb-2">
+         <h2 className="text-lg font-bold text-gray-800">{isEdit ? '编辑错题' : '记录错题'}</h2>
+         {isEdit && <button onClick={onCancel}><X size={24} className="text-gray-400"/></button>}
+      </div>
       
       <div className="space-y-4">
         <div>
-          <label className="block text-sm font-bold text-gray-700 mb-2">1. 题目图片 (必填)</label>
+          <label className="block text-sm font-bold text-gray-700 mb-2">1. 题目图片 <span className="text-red-500">*</span></label>
           <ImageUpload value={qImg} onChange={setQImg} />
         </div>
 
         <div>
-          <label className="block text-sm font-bold text-gray-700 mb-2">备注/标题</label>
+          <label className="block text-sm font-bold text-gray-700 mb-2">标题 / 备注</label>
           <input 
             type="text" 
             value={title}
             onChange={e => setTitle(e.target.value)}
-            placeholder="例如：导数极值点遗漏情况" 
-            className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl text-base focus:ring-2 focus:ring-blue-500 focus:bg-white transition outline-none" 
+            placeholder="例如：极限计算-洛必达法则条件" 
+            className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:border-blue-500 transition" 
           />
         </div>
 
         <div className="border-t border-dashed pt-4">
-          <label className="block text-sm font-bold text-gray-700 mb-2">2. 复盘思路 (关键!)</label>
+          <label className="block text-sm font-bold text-gray-700 mb-2">2. 复盘思路</label>
           <textarea 
             value={reflection}
             onChange={e => setReflection(e.target.value)}
-            className="w-full p-3 bg-yellow-50 border border-yellow-200 rounded-xl h-32 text-base focus:ring-2 focus:ring-yellow-500 transition outline-none resize-none"
-            placeholder="写下你的思维断点：为什么错了？哪个知识点没关联上？"
+            className="w-full p-3 bg-yellow-50 border border-yellow-200 rounded-xl h-28 text-sm outline-none focus:border-yellow-400 transition resize-none"
+            placeholder="关键点在哪里？当时是怎么想错的？"
           ></textarea>
         </div>
 
         <div className="border-t border-dashed pt-4">
-          <label className="block text-sm font-bold text-gray-700 mb-2">3. 正确解析</label>
+          <label className="block text-sm font-bold text-gray-700 mb-2">3. 答案解析</label>
           <ImageUpload value={aImg} onChange={setAImg} isAnalysis />
           <textarea 
             value={analysisText}
             onChange={e => setAnalysisText(e.target.value)}
-            className="w-full mt-3 p-3 bg-gray-50 border border-gray-100 rounded-xl h-24 text-sm focus:ring-2 focus:ring-green-500 focus:bg-white transition outline-none resize-none"
+            className="w-full mt-3 p-3 bg-gray-50 border border-gray-200 rounded-xl h-20 text-sm outline-none focus:border-green-500 transition resize-none"
             placeholder="或粘贴文字解析..."
           ></textarea>
         </div>
@@ -216,108 +236,109 @@ function MistakeForm({ mode, initialData, onFinish, onCancel }) {
       <button 
         onClick={handleSubmit} 
         disabled={loading}
-        className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-lg shadow-lg hover:bg-blue-700 active:scale-[0.98] transition flex justify-center items-center gap-2 disabled:opacity-50 disabled:scale-100"
+        className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-bold shadow-md active:scale-[0.98] transition flex justify-center items-center gap-2 mt-4"
       >
-        <Save size={20} />
-        {loading ? '保存中...' : '保存记录'}
+        <Save size={18} />
+        {loading ? '保存中...' : '保存'}
       </button>
     </div>
   );
 }
 
-// 子组件：图片上传控件
+// 子组件：图片上传
 function ImageUpload({ value, onChange, isAnalysis }) {
   const handleFile = async (e) => {
     const file = e.target.files[0];
     if(file) onChange(await fileToBase64(file));
   };
   return (
-    <div className={`relative border-2 border-dashed rounded-xl p-2 text-center h-40 flex items-center justify-center overflow-hidden bg-gray-50 transition hover:bg-gray-100 ${isAnalysis ? 'border-green-200' : 'border-blue-200'}`}>
+    <div className={`relative border-2 border-dashed rounded-xl h-32 flex items-center justify-center overflow-hidden bg-gray-50 transition ${isAnalysis ? 'border-green-200' : 'border-blue-200'}`}>
       {!value ? (
-        <div className="flex flex-col items-center gap-2 text-gray-400">
-          <Plus size={30} className={isAnalysis ? 'text-green-400' : 'text-blue-400'} />
-          <span className="text-sm font-medium">点击上传或拍照</span>
+        <div className="flex flex-col items-center gap-1 text-gray-400">
+          <Plus size={24} />
+          <span className="text-xs">点击上传</span>
           <input type="file" accept="image/*" onChange={handleFile} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"/>
         </div>
       ) : (
         <div className="relative w-full h-full group">
           <img src={value} className="w-full h-full object-contain" />
-          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-4">
-            <button onClick={() => document.getElementById('edit-' + (isAnalysis?'a':'q')).click()} className="p-2 bg-white rounded-full text-gray-700"><Edit size={20}/></button>
-            <button onClick={()=>onChange(null)} className="p-2 bg-white rounded-full text-red-500"><Trash2 size={20}/></button>
-          </div>
-            <input id={'edit-' + (isAnalysis?'a':'q')} type="file" accept="image/*" onChange={handleFile} className="hidden"/>
+          <button onClick={()=>onChange(null)} className="absolute top-2 right-2 p-1.5 bg-red-500/80 text-white rounded-full"><Trash2 size={14}/></button>
         </div>
       )}
     </div>
   )
 }
 
-// --- 3. 错题详情组件 (带编辑入口) ---
+// --- 3. 错题详情组件 ---
 function MistakeDetail({ mistake, onDelete, onEdit }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
   
   const handleDelete = async () => {
-    if(confirm('删除后无法恢复，确定要彻底删除这道题吗？')) {
+    if(confirm('删除后无法恢复，确定吗？')) {
       await db.mistakes.delete(mistake.id);
       onDelete();
     }
   }
 
   return (
-    <div className="space-y-6">
-      {/* 题目区域 */}
-      <div className="bg-white p-5 rounded-2xl shadow-sm relative overflow-hidden">
-        <div className="absolute top-0 left-0 w-2 h-full bg-blue-500"></div>
-        <div className="flex justify-between items-start mb-4 pl-4">
-          <h2 className="font-bold text-xl text-gray-800">{mistake.title || "题目"}</h2>
-          <button onClick={onEdit} className="p-2 bg-gray-100 text-blue-600 rounded-full hover:bg-blue-100 transition flex items-center gap-1 text-sm font-bold px-3">
-            <Edit size={16} /> 编辑
+    <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl pb-20 overflow-hidden relative">
+       {/* 标题栏 */}
+      <div className="p-4 border-b border-gray-100 flex justify-between items-start bg-white sticky top-0 z-10">
+        <div>
+           <h2 className="font-bold text-lg text-gray-900 leading-snug">{mistake.title || "题目详情"}</h2>
+           <p className="text-xs text-gray-400 mt-1">{new Date(mistake.createdAt).toLocaleString()}</p>
+        </div>
+        <button onClick={onEdit} className="p-2 bg-gray-50 text-blue-600 rounded-lg hover:bg-blue-50">
+          <Edit size={18} />
+        </button>
+      </div>
+
+      <div className="p-4 space-y-6">
+        {/* 题目图 */}
+        <div className="rounded-xl overflow-hidden border border-gray-100 shadow-sm">
+          <img src={mistake.questionImg} alt="题目" className="w-full" />
+        </div>
+
+        {/* 底部浮动控制栏 */}
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 z-20 bg-white/90 backdrop-blur-md p-2 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.1)] border border-gray-200/50">
+           <button 
+            onClick={() => setShowAnalysis(!showAnalysis)}
+            className={`flex items-center gap-2 px-6 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap ${
+              showAnalysis 
+              ? 'bg-gray-100 text-gray-700' 
+              : 'bg-green-600 text-white shadow-lg'
+            }`}
+          >
+            {showAnalysis ? <><EyeOff size={18}/> 遮住答案</> : <><Eye size={18}/> 查看解析</>}
+          </button>
+          
+          <div className="h-6 w-[1px] bg-gray-300"></div>
+
+          <button onClick={handleDelete} className="p-3 rounded-full text-red-500 hover:bg-red-50 transition">
+            <Trash2 size={18} />
           </button>
         </div>
-        <img src={mistake.questionImg} alt="题目" className="w-full rounded-xl border border-gray-100" />
-      </div>
 
-      {/* 控制栏 */}
-      <div className="flex justify-between items-center px-2 py-4 sticky bottom-0 bg-gray-100/80 backdrop-blur-md z-10 -mx-4 px-6 border-t border-gray-200/50">
-        <button 
-          onClick={() => setShowAnalysis(!showAnalysis)}
-          className={`flex items-center gap-2 px-6 py-3 rounded-full font-bold text-lg transition-all shadow-md ${
-            showAnalysis 
-            ? 'bg-gray-200 text-gray-700 scale-95' 
-            : 'bg-green-600 text-white hover:bg-green-700 hover:scale-105 active:scale-95'
-          }`}
-        >
-          {showAnalysis ? <><EyeOff size={20}/> 遮住答案</> : <><Eye size={20}/> 查看解析</>}
-        </button>
+        {/* 隐藏区域：复盘与解析 */}
+        <div className={`space-y-4 transition-all duration-300 ${showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden'}`}>
+          
+          {/* 复盘笔记 */}
+          <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm">
+             <div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div>
+             <p className="whitespace-pre-wrap text-gray-800 leading-relaxed">
+               {mistake.reflection || "暂无复盘记录"}
+             </p>
+          </div>
 
-        <button onClick={handleDelete} className="text-red-400 p-3 rounded-full hover:bg-red-50 transition border border-transparent hover:border-red-100">
-          <Trash2 size={24} />
-        </button>
-      </div>
-
-      {/* 复盘与解析区域 (动画显示) */}
-      <div className={`space-y-4 transition-all duration-500 ${showAnalysis ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10 pointer-events-none h-0 overflow-hidden'}`}>
-        <div className="bg-yellow-50 p-5 rounded-2xl border border-yellow-200 shadow-sm relative">
-          <div className="absolute -top-3 left-4 bg-yellow-400 text-yellow-900 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider shadow-sm">我的复盘</div>
-          <p className="text-gray-800 whitespace-pre-wrap leading-relaxed mt-2">
-            {mistake.reflection || "（当时没有记录复盘思路... 下次记得写上！）"}
-          </p>
-        </div>
-
-        <div className="bg-white p-5 rounded-2xl shadow-sm border-l-4 border-green-500">
-          <h3 className="font-bold text-lg text-green-800 mb-4 flex items-center gap-2">
-            <span className="bg-green-100 p-1 rounded">🎯</span> 标准解析
-          </h3>
-          {mistake.analysisImg && (
-            <img src={mistake.analysisImg} alt="解析" className="w-full rounded-xl mb-4 border border-gray-100" />
-          )}
-          {mistake.analysisText && (
-            <div className="bg-gray-50 p-4 rounded-xl text-gray-700 whitespace-pre-wrap leading-7 text-base">
-              {mistake.analysisText}
-            </div>
-          )}
-          {!mistake.analysisImg && !mistake.analysisText && <p className="text-gray-400 italic text-center py-4">暂无解析内容</p>}
+          {/* 解析内容 */}
+          <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm">
+             <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
+             {mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/>}
+             <div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{mistake.analysisText}</div>
+          </div>
+          
+          {/* 垫高底部，防止被按钮遮挡 */}
+          <div className="h-20"></div>
         </div>
       </div>
     </div>
