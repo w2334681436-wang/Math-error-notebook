@@ -10,13 +10,13 @@ export default defineConfig({
       devOptions: {
         enabled: true
       },
-      manifest: {
-        name: '数学错题本',
-        short_name: '错题本',
-        description: '考研数学错题复盘',
-        theme_color: '#ffffff',
+     manifest: {
+        name: '数学复盘', // 修改这里
+        short_name: '复盘', // 修改这里，短名称用于主屏幕
+        description: '考研数学错题复盘与精进',
+        theme_color: '#2563eb', // 改成更专业的蓝色
+        background_color: "#f3f4f6",
         display: 'standalone',
-        background_color: "#ffffff",
         icons: [
           {
             src: "icon-192.png",
