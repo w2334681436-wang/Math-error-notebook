@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { db } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Plus, Maximize, ArrowLeft, Eye, EyeOff, Trash2, Save, Edit, X, RefreshCw } from 'lucide-react';
+import { Plus, Maximize, ArrowLeft, Eye, EyeOff, Trash2, Save, Edit, X } from 'lucide-react';
 
 // --- 版本控制 ---
-// 每次更新代码时，手动修改这里，界面底部会自动显示
-const APP_VERSION = "v1.2.0 (2025.12.08)";
+// 更新了版本号，部署后你在列表底部看到这个号码变了，就说明更新成功了
+const APP_VERSION = "v1.3.0 (布局优化版)";
 
 // --- 工具函数 ---
 const fileToBase64 = (file) => new Promise((resolve, reject) => {
@@ -79,17 +79,17 @@ function App() {
         )}
       </main>
 
-      {/* 版本号显示 (仅在列表页显示) */}
+      {/* 版本号显示 */}
       {view === 'list' && (
-        <div className="text-center py-6 text-gray-400 text-xs">
-          当前版本: {APP_VERSION}
+        <div className="text-center py-6 text-gray-400 text-xs font-mono opacity-60">
+          Build: {APP_VERSION}
         </div>
       )}
     </div>
   );
 }
 
-// --- 1. 错题列表组件 (长条布局回归) ---
+// --- 1. 错题列表组件 (布局大改版) ---
 function MistakeList({ mistakes, onAdd, onOpen }) {
   if (!mistakes) return <div className="text-center mt-20 text-gray-400">加载数据中...</div>;
   
@@ -104,37 +104,46 @@ function MistakeList({ mistakes, onAdd, onOpen }) {
   );
 
   return (
-    <div className="p-4 space-y-3">
+    <div className="p-3 space-y-3">
       {mistakes.map((item) => (
         <div 
           key={item.id} 
           onClick={() => onOpen(item.id)}
-          className="bg-white rounded-xl shadow-sm border border-gray-200 active:scale-[0.98] transition-transform cursor-pointer overflow-hidden flex h-28"
+          className="bg-white rounded-xl shadow-sm border border-gray-200 active:scale-[0.98] transition-transform cursor-pointer overflow-hidden flex h-36"
         >
-          {/* 左侧：固定宽度的图片区域 */}
-          <div className="w-32 h-full bg-gray-100 flex-shrink-0 relative">
+          {/* 左侧：信息区 (只占 35% 宽度) */}
+          <div className="w-[35%] p-3 flex flex-col justify-between border-r border-gray-100 bg-white z-10">
+            <div>
+              <h3 className="font-bold text-gray-800 text-sm line-clamp-3 leading-relaxed">
+                {item.title || "未命名"}
+              </h3>
+            </div>
+            
+            <div className="space-y-1">
+               {/* 状态标签 */}
+               <div>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${
+                    item.reflection 
+                    ? 'bg-blue-50 text-blue-600 border-blue-100' 
+                    : 'bg-gray-100 text-gray-400 border-gray-200'
+                }`}>
+                    {item.reflection ? '已复盘' : '待复盘'}
+                </span>
+               </div>
+               {/* 日期 */}
+               <div className="text-[10px] text-gray-400 font-medium pl-0.5">
+                 {new Date(item.createdAt).toLocaleDateString(undefined, {month:'2-digit', day:'2-digit'})}
+               </div>
+            </div>
+          </div>
+          
+          {/* 右侧：图片区 (占据 65% 剩余空间) */}
+          <div className="flex-1 relative bg-gray-50 h-full">
             {item.questionImg ? (
               <img src={item.questionImg} alt="题目" className="absolute inset-0 w-full h-full object-cover" />
             ) : (
               <div className="flex items-center justify-center h-full text-gray-300 text-xs">无图</div>
             )}
-          </div>
-          
-          {/* 右侧：内容区域 */}
-          <div className="flex-1 p-3 flex flex-col justify-between min-w-0">
-            <div>
-              <h3 className="font-bold text-gray-800 text-sm line-clamp-2 leading-snug">
-                {item.title || "未命名错题"}
-              </h3>
-            </div>
-            <div className="flex justify-between items-end">
-               <span className="text-[10px] text-white bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full font-medium">
-                 {item.reflection ? '已复盘' : '待复盘'}
-               </span>
-               <span className="text-[10px] text-gray-400 font-medium">
-                 {new Date(item.createdAt).toLocaleDateString()}
-               </span>
-            </div>
           </div>
         </div>
       ))}
@@ -180,8 +189,7 @@ function MistakeForm({ mode, initialData, onFinish, onCancel }) {
       }
       onFinish();
     } catch (e) {
-      alert("保存失败，可能是图片太大。");
-      console.error(e);
+      alert("保存失败，图片可能过大。");
     } finally {
       setLoading(false);
     }
@@ -282,7 +290,6 @@ function MistakeDetail({ mistake, onDelete, onEdit }) {
 
   return (
     <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl pb-20 overflow-hidden relative">
-       {/* 标题栏 */}
       <div className="p-4 border-b border-gray-100 flex justify-between items-start bg-white sticky top-0 z-10">
         <div>
            <h2 className="font-bold text-lg text-gray-900 leading-snug">{mistake.title || "题目详情"}</h2>
@@ -294,12 +301,10 @@ function MistakeDetail({ mistake, onDelete, onEdit }) {
       </div>
 
       <div className="p-4 space-y-6">
-        {/* 题目图 */}
         <div className="rounded-xl overflow-hidden border border-gray-100 shadow-sm">
           <img src={mistake.questionImg} alt="题目" className="w-full" />
         </div>
 
-        {/* 底部浮动控制栏 */}
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 z-20 bg-white/90 backdrop-blur-md p-2 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.1)] border border-gray-200/50">
            <button 
             onClick={() => setShowAnalysis(!showAnalysis)}
@@ -319,10 +324,7 @@ function MistakeDetail({ mistake, onDelete, onEdit }) {
           </button>
         </div>
 
-        {/* 隐藏区域：复盘与解析 */}
         <div className={`space-y-4 transition-all duration-300 ${showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden'}`}>
-          
-          {/* 复盘笔记 */}
           <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm">
              <div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div>
              <p className="whitespace-pre-wrap text-gray-800 leading-relaxed">
@@ -330,14 +332,11 @@ function MistakeDetail({ mistake, onDelete, onEdit }) {
              </p>
           </div>
 
-          {/* 解析内容 */}
           <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm">
              <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
              {mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/>}
              <div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{mistake.analysisText}</div>
           </div>
-          
-          {/* 垫高底部，防止被按钮遮挡 */}
           <div className="h-20"></div>
         </div>
       </div>
