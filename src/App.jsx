@@ -5,7 +5,8 @@ import {
   Plus, Maximize, ArrowLeft, Eye, EyeOff, Trash2, Save, Edit, X, Search, ChevronRight, 
   Folder, FileText, ChevronDown, ChevronRight as ChevronRightIcon, GripVertical, Image as ImageIcon, Tag, 
   ArrowUpLeft, ArrowRightSquare, PanelLeftClose, PanelLeftOpen, 
-  MoreVertical, CheckSquare, Copy, Scissors, Clipboard, CheckCircle2, Circle // [新增] 图标
+  MoreVertical, CheckSquare, Copy, Scissors, Clipboard, CheckCircle2, Circle,
+  Home, ChevronLeft 
 } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay, useDndMonitor } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
@@ -102,7 +103,7 @@ function App() {
 }
 
 // ==========================================
-// 模块一：错题本系统 (MistakeSystem)
+// 模块一：错题本系统 (MistakeSystem) - [增强导航]
 // ==========================================
 function MistakeSystem() {
   const [view, setView] = useState('list'); 
@@ -134,11 +135,31 @@ function MistakeSystem() {
     }
   };
 
+  // [新增] 上一题逻辑
+  const handlePrevMistake = () => {
+    if (!mistakes || !currentMistakeId) return;
+    const listToUse = searchQuery ? filteredMistakes : mistakes;
+    const currentIndex = listToUse.findIndex(m => m.id === currentMistakeId);
+    if (currentIndex > 0) {
+      setCurrentMistakeId(listToUse[currentIndex - 1].id);
+    } else {
+      alert("已经是第一题了");
+    }
+  };
+
   const hasNext = useMemo(() => {
     if (!mistakes || !currentMistakeId) return false;
     const listToUse = searchQuery ? filteredMistakes : mistakes;
     const currentIndex = listToUse.findIndex(m => m.id === currentMistakeId);
     return currentIndex !== -1 && currentIndex < listToUse.length - 1;
+  }, [mistakes, filteredMistakes, currentMistakeId, searchQuery]);
+
+  // [新增] 是否有上一题
+  const hasPrev = useMemo(() => {
+    if (!mistakes || !currentMistakeId) return false;
+    const listToUse = searchQuery ? filteredMistakes : mistakes;
+    const currentIndex = listToUse.findIndex(m => m.id === currentMistakeId);
+    return currentIndex > 0;
   }, [mistakes, filteredMistakes, currentMistakeId, searchQuery]);
 
   return (
@@ -147,7 +168,7 @@ function MistakeSystem() {
         <div className="max-w-3xl mx-auto p-3 space-y-3">
            <div className="relative">
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Search size={18} className="text-gray-400" /></div>
-              <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="搜索错题、备注或日期..." className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm transition"/>
+              <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="搜索错题..." className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm transition"/>
             </div>
             <MistakeList mistakes={filteredMistakes} onAdd={() => setView('add')} onOpen={(id) => { setCurrentMistakeId(id); setView('detail'); }} />
             <div className="text-center py-4 text-gray-400 text-xs font-mono opacity-60">Build: {APP_VERSION}</div>
@@ -155,7 +176,16 @@ function MistakeSystem() {
       )}
       {view === 'add' && <MistakeForm mode="add" onFinish={() => setView('list')} onCancel={() => setView('list')} />}
       {view === 'detail' && currentMistake && (
-        <MistakeDetail mistake={currentMistake} hasNext={hasNext} onNext={handleNextMistake} onDelete={() => setView('list')} onEdit={() => setView('edit')} onBack={() => setView('list')} />
+        <MistakeDetail 
+          mistake={currentMistake} 
+          hasNext={hasNext} 
+          onNext={handleNextMistake} 
+          hasPrev={hasPrev} // [新增]
+          onPrev={handlePrevMistake} // [新增]
+          onDelete={() => setView('list')} 
+          onEdit={() => setView('edit')} 
+          onBack={() => setView('list')} 
+        />
       )}
       {view === 'edit' && currentMistake && (
         <MistakeForm mode="edit" initialData={currentMistake} onFinish={() => setView('detail')} onCancel={() => setView('detail')} />
@@ -295,7 +325,7 @@ function NoteSystem() {
       <div className="flex-1 h-full overflow-hidden flex flex-col relative bg-white">
         {!mobileMenuOpen && (<button onClick={() => setMobileMenuOpen(true)} className="absolute top-4 left-4 z-10 p-2 bg-white shadow-md border rounded-full md:hidden"><ChevronRightIcon size={20} /></button>)}
         
-        {selectedNode ? (
+     {selectedNode ? (
           selectedNode.type === 'folder' ? (
             <FolderView 
               folder={selectedNode} 
@@ -309,11 +339,11 @@ function NoteSystem() {
               clipboardCount={clipboard.items.length}
             />
           ) : (
-            // [修改] 传递 onNavigate 属性
             <NoteEditor 
               nodeId={selectedNodeId} 
               onNavigate={setSelectedNodeId}
-              onBack={() => setMobileMenuOpen(true)} 
+              // [修复] 这里的 onBack 改为返回父级 ID
+              onBack={() => setSelectedNodeId(selectedNode.parentId === 'root' ? null : selectedNode.parentId)} 
             />
           )
         ) : (
@@ -650,32 +680,24 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
     </div>
   );
 }
-// --- [更新] 知识点编辑器：支持同层级切换 ---
+// --- [更新] 知识点编辑器：增加返回按钮 ---
 function NoteEditor({ nodeId, onBack, onNavigate }) {
   const note = useLiveQuery(() => db.notes.get(nodeId), [nodeId]);
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState('');
   const [newTag, setNewTag] = useState('');
 
-  // [新增] 获取同层级的所有知识点（用于导航）
   const siblings = useLiveQuery(async () => {
     if (!note) return [];
     const items = await db.notes.where('parentId').equals(note.parentId).toArray();
-    // 过滤出只有文件的列表，并按顺序排列
-    return items
-      .filter(n => n.type === 'file')
-      .sort((a, b) => (a.order || 0) - (b.order || 0));
+    return items.filter(n => n.type === 'file').sort((a, b) => (a.order || 0) - (b.order || 0));
   }, [note?.parentId]);
 
-  // [新增] 计算上一页/下一页 ID
   const { prevId, nextId } = useMemo(() => {
     if (!siblings || siblings.length < 2) return { prevId: null, nextId: null };
     const idx = siblings.findIndex(n => n.id === nodeId);
     if (idx === -1) return { prevId: null, nextId: null };
-    return {
-      prevId: idx > 0 ? siblings[idx - 1].id : null,
-      nextId: idx < siblings.length - 1 ? siblings[idx + 1].id : null
-    };
+    return { prevId: idx > 0 ? siblings[idx - 1].id : null, nextId: idx < siblings.length - 1 ? siblings[idx + 1].id : null };
   }, [siblings, nodeId]);
 
   useEffect(() => { if(note) setTitle(note.title); }, [note]);
@@ -691,38 +713,31 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
   return (
     <div className="flex flex-col h-full bg-white">
       <div className="p-4 border-b border-gray-100 flex justify-between items-center sticky top-0 bg-white z-10">
-        <div className="flex-1 mr-4 overflow-hidden">
-           {editingTitle ? (
-             <input autoFocus value={title} onChange={e => setTitle(e.target.value)} onBlur={() => { setEditingTitle(false); handleUpdate({ title }); }} onKeyDown={e => { if(e.key === 'Enter') { setEditingTitle(false); handleUpdate({ title }); } }} className="text-xl font-bold w-full border-b border-blue-500 outline-none"/>
-           ) : (
-             <h2 onClick={() => setEditingTitle(true)} className="text-xl font-bold cursor-pointer hover:bg-gray-50 rounded px-2 -ml-2 truncate">{note.title}</h2>
-           )}
-           <div className="text-xs text-gray-400 mt-1 ml-1 flex items-center gap-2">{new Date(note.createdAt).toLocaleDateString()}</div>
+        <div className="flex items-center gap-3 flex-1 mr-4 overflow-hidden">
+           {/* [新增] 返回上一级按钮 */}
+           <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500" title="返回上一级">
+             <ArrowUpLeft size={20}/>
+           </button>
+           
+           <div className="flex-1">
+             {editingTitle ? (
+               <input autoFocus value={title} onChange={e => setTitle(e.target.value)} onBlur={() => { setEditingTitle(false); handleUpdate({ title }); }} onKeyDown={e => { if(e.key === 'Enter') { setEditingTitle(false); handleUpdate({ title }); } }} className="text-xl font-bold w-full border-b border-blue-500 outline-none"/>
+             ) : (
+               <h2 onClick={() => setEditingTitle(true)} className="text-xl font-bold cursor-pointer hover:bg-gray-50 rounded px-2 -ml-2 truncate">{note.title}</h2>
+             )}
+             <div className="text-xs text-gray-400 mt-1 ml-1 flex items-center gap-2">{new Date(note.createdAt).toLocaleDateString()}</div>
+           </div>
         </div>
         
-        {/* [新增] 导航按钮组 */}
         <div className="flex items-center gap-1 mr-2 bg-gray-100 p-1 rounded-lg">
-            <button 
-                onClick={() => onNavigate(prevId)} 
-                disabled={!prevId}
-                className="p-1.5 hover:bg-white hover:shadow-sm rounded-md disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:shadow-none transition-all text-gray-600"
-                title="上一篇"
-            >
-                <ChevronRightIcon size={18} className="rotate-180"/> {/* 复用 ChevronRight 并旋转 */}
-            </button>
+            <button onClick={() => onNavigate(prevId)} disabled={!prevId} className="p-1.5 hover:bg-white hover:shadow-sm rounded-md disabled:opacity-30 transition-all text-gray-600"><ChevronLeft size={18}/></button>
             <div className="w-[1px] h-4 bg-gray-300"></div>
-            <button 
-                onClick={() => onNavigate(nextId)} 
-                disabled={!nextId}
-                className="p-1.5 hover:bg-white hover:shadow-sm rounded-md disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:shadow-none transition-all text-gray-600"
-                title="下一篇"
-            >
-                <ChevronRightIcon size={18}/>
-            </button>
+            <button onClick={() => onNavigate(nextId)} disabled={!nextId} className="p-1.5 hover:bg-white hover:shadow-sm rounded-md disabled:opacity-30 transition-all text-gray-600"><ChevronRight size={18}/></button>
         </div>
-
         <button onClick={handleDeleteNote} className="text-red-400 hover:bg-red-50 p-2 rounded-full"><Trash2 size={20}/></button>
       </div>
+      
+      {/* 标签栏 */}
       {note.type === 'file' && (
         <div className="px-6 py-2 flex flex-wrap items-center gap-2 border-b border-gray-50">
             <Tag size={14} className="text-gray-400"/>
@@ -730,8 +745,8 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
             <div className="flex items-center gap-1 bg-gray-50 rounded-full px-2 py-1"><input value={newTag} onChange={e => setNewTag(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddTag()} placeholder="添加标签..." className="bg-transparent text-xs w-20 outline-none"/><Plus size={12} className="cursor-pointer text-gray-400" onClick={handleAddTag}/></div>
         </div>
       )}
+      
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
-         {/* 内容渲染区域保持不变 */}
          {note.content?.map((item, idx) => (
             <div key={item.id} className="group relative bg-gray-50 rounded-xl p-2 border border-gray-100">
                 <img src={item.src} className="w-full rounded-lg" />
@@ -853,41 +868,31 @@ function ImageUpload({ value, onChange, isAnalysis }) {
   )
 }
 
-// --- [修复版] 错题详情组件 ---
-function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onBack }) {
+// --- [更新] 错题详情：增加首页按钮和上一题 ---
+function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, hasPrev, onBack }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
-  
-  // 切换题目时重置解析显示状态
   useEffect(() => { setShowAnalysis(false); }, [mistake.id]);
-  
-  const handleDelete = async () => { 
-    if(confirm('删除后无法恢复，确定吗？')) { 
-      await db.mistakes.delete(mistake.id); 
-      onDelete(); 
-    } 
-  }
+  const handleDelete = async () => { if(confirm('删除后无法恢复，确定吗？')) { await db.mistakes.delete(mistake.id); onDelete(); } }
 
-  // 兼容多图和单图数据
   const images = mistake.questionImages || (mistake.questionImg ? [mistake.questionImg] : []);
 
   return (
     <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl pb-24 overflow-hidden relative">
-      {/* 顶部标题栏 */}
       <div className="p-4 border-b border-gray-100 flex justify-between items-start bg-white sticky top-0 z-10">
-        <div className="flex items-center gap-2">
-           <button onClick={onBack} className="md:hidden p-1 -ml-2"><ArrowLeft size={20}/></button>
+        <div className="flex items-center gap-3">
+           {/* [新增] 首页按钮 */}
+           <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600 transition" title="返回列表">
+             <Home size={20}/>
+           </button>
            <div>
              <h2 className="font-bold text-lg text-gray-900 leading-snug">{mistake.title || "题目详情"}</h2>
              <p className="text-xs text-gray-400 mt-1">{new Date(mistake.createdAt).toLocaleString()}</p>
            </div>
         </div>
-        <button onClick={onEdit} className="p-2 bg-gray-50 text-blue-600 rounded-lg hover:bg-blue-50">
-          <Edit size={18} />
-        </button>
+        <button onClick={onEdit} className="p-2 bg-gray-50 text-blue-600 rounded-lg hover:bg-blue-50"><Edit size={18} /></button>
       </div>
-
+      
       <div className="p-4 space-y-6">
-        {/* 题目图片区域 (支持多图) */}
         <div className="space-y-2">
           {images.map((img, idx) => (
             <div key={idx} className="rounded-xl overflow-hidden border border-gray-100 shadow-sm relative">
@@ -898,51 +903,36 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onBack }) {
           {images.length === 0 && <div className="p-8 text-center text-gray-300 bg-gray-50 rounded-xl">无图片</div>}
         </div>
 
-        {/* 底部悬浮控制栏 */}
         <div className="fixed bottom-20 w-full max-w-3xl left-1/2 -translate-x-1/2 px-4 z-20 flex items-center justify-center pointer-events-none">
           <div className="bg-white/95 backdrop-blur-md p-2 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.15)] border border-gray-200 flex items-center gap-3 pointer-events-auto">
-             <button onClick={handleDelete} className="p-3 rounded-full text-red-400 hover:bg-red-50 transition"><Trash2 size={20} /></button>
              
-             <div className="h-6 w-[1px] bg-gray-200"></div>
+             {/* [新增] 上一题按钮 */}
+             {hasPrev && (
+               <>
+                 <button onClick={onPrev} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition" title="上一题"><ChevronLeft size={24} /></button>
+                 <div className="h-6 w-[1px] bg-gray-200"></div>
+               </>
+             )}
 
-             <button 
-               onClick={() => setShowAnalysis(!showAnalysis)} 
-               className={cn("flex items-center gap-2 px-6 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap", showAnalysis ? 'bg-gray-100 text-gray-700' : 'bg-green-600 text-white shadow-lg')}
-             >
+             <button onClick={() => setShowAnalysis(!showAnalysis)} className={cn("flex items-center gap-2 px-6 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap", showAnalysis ? 'bg-gray-100 text-gray-700' : 'bg-green-600 text-white shadow-lg')}>
                {showAnalysis ? <><EyeOff size={18}/> 遮住答案</> : <><Eye size={18}/> 查看解析</>}
              </button>
 
              {hasNext && (
                <>
                  <div className="h-6 w-[1px] bg-gray-200"></div>
-                 <button onClick={onNext} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition"><ChevronRight size={24} /></button>
+                 <button onClick={onNext} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition" title="下一题"><ChevronRight size={24} /></button>
                </>
              )}
+
+             <div className="h-6 w-[1px] bg-gray-200"></div>
+             <button onClick={handleDelete} className="p-3 rounded-full text-red-400 hover:bg-red-50 transition"><Trash2 size={20} /></button>
           </div>
         </div>
 
-        {/* 解析区域 (已修复语法错误) */}
         <div className={cn("space-y-4 transition-all duration-300", showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden')}>
-          {/* 复盘部分 */}
-          <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm">
-            <div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div>
-            <p className="whitespace-pre-wrap text-gray-800 leading-relaxed">{mistake.reflection || "暂无复盘记录"}</p>
-          </div>
-
-          {/* 标准解析部分 */}
-          <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm">
-             <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
-             
-             {/* 修复点：将图片和文字分开渲染，或确保逻辑正确 */}
-             {mistake.analysisImg && (
-               <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/>
-             )}
-             
-             <div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">
-               {mistake.analysisText}
-             </div>
-          </div>
-          
+          <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm"><div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div><p className="whitespace-pre-wrap text-gray-800 leading-relaxed">{mistake.reflection || "暂无复盘记录"}</p></div>
+          <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm"><div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>{mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/><div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{mistake.analysisText}</div>}</div>
           <div className="h-20"></div>
         </div>
       </div>
