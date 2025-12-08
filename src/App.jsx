@@ -20,7 +20,7 @@ const fileToBase64 = (file) => new Promise((resolve, reject) => {
   reader.onerror = error => reject(error);
 });
 const generateId = () => Math.random().toString(36).substr(2, 9);
-const APP_VERSION = "v2.0.1 (修复构建错误)";
+const APP_VERSION = "v2.0.2 (修复解析显示)";
 
 // ==========================================
 // 主入口 App
@@ -571,7 +571,11 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onBack }) {
         </div>
         <div className={cn("space-y-4 transition-all duration-300", showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden')}>
           <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm"><div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div><p className="whitespace-pre-wrap text-gray-800 leading-relaxed">{mistake.reflection || "暂无复盘记录"}</p></div>
-          <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm"><div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>{mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/><div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{mistake.analysisText}</div>}</div>
+          <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm">
+             <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
+             {mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/>}
+             <div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{mistake.analysisText}</div>
+          </div>
           <div className="h-20"></div>
         </div>
       </div>
