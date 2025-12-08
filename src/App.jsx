@@ -868,22 +868,20 @@ function ImageUpload({ value, onChange, isAnalysis }) {
   )
 }
 
-// --- [更新] 错题详情：增加首页按钮和上一题 ---
+// --- [修复版] 错题详情：修复解析区域的语法错误 ---
 function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, hasPrev, onBack }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
   useEffect(() => { setShowAnalysis(false); }, [mistake.id]);
   const handleDelete = async () => { if(confirm('删除后无法恢复，确定吗？')) { await db.mistakes.delete(mistake.id); onDelete(); } }
 
+  // 兼容多图和单图
   const images = mistake.questionImages || (mistake.questionImg ? [mistake.questionImg] : []);
 
   return (
     <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl pb-24 overflow-hidden relative">
       <div className="p-4 border-b border-gray-100 flex justify-between items-start bg-white sticky top-0 z-10">
         <div className="flex items-center gap-3">
-           {/* [新增] 首页按钮 */}
-           <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600 transition" title="返回列表">
-             <Home size={20}/>
-           </button>
+           <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600 transition" title="返回列表"><Home size={20}/></button>
            <div>
              <h2 className="font-bold text-lg text-gray-900 leading-snug">{mistake.title || "题目详情"}</h2>
              <p className="text-xs text-gray-400 mt-1">{new Date(mistake.createdAt).toLocaleString()}</p>
@@ -893,6 +891,7 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
       </div>
       
       <div className="p-4 space-y-6">
+        {/* 题目图片 */}
         <div className="space-y-2">
           {images.map((img, idx) => (
             <div key={idx} className="rounded-xl overflow-hidden border border-gray-100 shadow-sm relative">
@@ -903,43 +902,31 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
           {images.length === 0 && <div className="p-8 text-center text-gray-300 bg-gray-50 rounded-xl">无图片</div>}
         </div>
 
+        {/* 底部悬浮栏 */}
         <div className="fixed bottom-20 w-full max-w-3xl left-1/2 -translate-x-1/2 px-4 z-20 flex items-center justify-center pointer-events-none">
           <div className="bg-white/95 backdrop-blur-md p-2 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.15)] border border-gray-200 flex items-center gap-3 pointer-events-auto">
-             
-             {/* [新增] 上一题按钮 */}
-             {hasPrev && (
-               <>
-                 <button onClick={onPrev} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition" title="上一题"><ChevronLeft size={24} /></button>
-                 <div className="h-6 w-[1px] bg-gray-200"></div>
-               </>
-             )}
-
-             <button onClick={() => setShowAnalysis(!showAnalysis)} className={cn("flex items-center gap-2 px-6 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap", showAnalysis ? 'bg-gray-100 text-gray-700' : 'bg-green-600 text-white shadow-lg')}>
-               {showAnalysis ? <><EyeOff size={18}/> 遮住答案</> : <><Eye size={18}/> 查看解析</>}
-             </button>
-
-             {hasNext && (
-               <>
-                 <div className="h-6 w-[1px] bg-gray-200"></div>
-                 <button onClick={onNext} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition" title="下一题"><ChevronRight size={24} /></button>
-               </>
-             )}
-
+             {hasPrev && (<><button onClick={onPrev} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition" title="上一题"><ChevronLeft size={24} /></button><div className="h-6 w-[1px] bg-gray-200"></div></>)}
+             <button onClick={() => setShowAnalysis(!showAnalysis)} className={cn("flex items-center gap-2 px-6 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap", showAnalysis ? 'bg-gray-100 text-gray-700' : 'bg-green-600 text-white shadow-lg')}>{showAnalysis ? <><EyeOff size={18}/> 遮住答案</> : <><Eye size={18}/> 查看解析</>}</button>
+             {hasNext && (<><div className="h-6 w-[1px] bg-gray-200"></div><button onClick={onNext} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition" title="下一题"><ChevronRight size={24} /></button></>)}
              <div className="h-6 w-[1px] bg-gray-200"></div>
              <button onClick={handleDelete} className="p-3 rounded-full text-red-400 hover:bg-red-50 transition"><Trash2 size={20} /></button>
           </div>
         </div>
 
+        {/* 解析区域 (修复了这里的大括号语法错误) */}
         <div className={cn("space-y-4 transition-all duration-300", showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden')}>
           <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm"><div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div><p className="whitespace-pre-wrap text-gray-800 leading-relaxed">{mistake.reflection || "暂无复盘记录"}</p></div>
-          <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm"><div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>{mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/><div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{mistake.analysisText}</div>}</div>
+          <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm">
+            <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
+            {mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/>}
+            <div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{mistake.analysisText}</div>
+          </div>
           <div className="h-20"></div>
         </div>
       </div>
     </div>
   );
 }
-
 // --- [新增] 多图上传组件 ---
 function MultiImageUpload({ images = [], onChange, max = 9 }) {
   const handleFile = async (e) => {
