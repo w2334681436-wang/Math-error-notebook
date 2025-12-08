@@ -5,12 +5,12 @@ import {
   Plus, Maximize, ArrowLeft, Eye, EyeOff, Trash2, Save, Edit, X, Search, ChevronRight, 
   Folder, FileText, ChevronDown, ChevronRight as ChevronRightIcon, GripVertical, Image as ImageIcon, Tag, 
   ArrowUpLeft, ArrowRightSquare, PanelLeftClose, PanelLeftOpen, 
-  MoreVertical, CheckSquare, Copy, Scissors, Clipboard, CheckCircle2, Circle,
-  Home, ChevronLeft, ArrowDownUp, Calendar // [新增] 排序和日历图标
+  MoreVertical, // [关键] 菜单按钮图标
+  CheckSquare, Copy, Scissors, Clipboard, CheckCircle2, Circle,
+  Home, ChevronLeft, ArrowDownUp, Calendar
 } from 'lucide-react';
 
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay, useDndMonitor, pointerWithin } from '@dnd-kit/core';
-// [新增] 引入 rectSortingStrategy 用于网格排序
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable, rectSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { clsx } from 'clsx';
@@ -484,7 +484,7 @@ function MoveModal({ node, allNotes, onClose, onConfirm }) {
   );
 }
 
-// --- [更新] 文件夹视图：实现菜单与拖拽的时间差逻辑 ---
+// --- [修复版] 文件夹视图 (稳定交互) ---
 function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, onCut, onPaste, clipboardCount }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState(folder.title);
@@ -498,7 +498,7 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
   const [sortConfig, setSortConfig] = useState({ key: 'order', label: '自定义' }); 
 
   const allNotes = useLiveQuery(() => db.notes.toArray()) || [];
-  const longPressTimer = React.useRef(null);
+  const bgLongPressTimer = React.useRef(null); // 仅用于背景长按
 
   useEffect(() => { setTitle(folder.title); setSelectedIds(new Set()); setIsSelectionMode(false); setRenamingId(null); }, [folder.id]);
 
@@ -510,25 +510,13 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
     return sorted;
   }, [contents, sortConfig]);
 
-  // [关键配置] 拖拽传感器：延迟 600ms 才开始拖拽
+  // [配置] 拖拽传感器：200ms 延迟，5px 容差 (手感最佳)
   const sensors = useSensors(
-    useSensor(PointerSensor, { 
-      activationConstraint: { 
-        delay: 600, // 拖拽比菜单慢，给菜单展示的机会
-        tolerance: 8 // 允许手指轻微移动 8px，防止太灵敏导致无法长按
-      } 
-    }),
+    useSensor(PointerSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
-  // [关键逻辑] 拖拽开始时：如果菜单正开着，立刻关掉
-  const handleDragStart = () => {
-    clearTimer(); // 清除还在跑的计时器
-    setContextMenu(null); // 关闭已打开的菜单
-  };
-
   const handleDragEnd = (event) => {
-    clearTimer();
     const { active, over } = event;
     if (!over || active.id === over.id || sortConfig.key !== 'order') return;
     const oldIndex = sortedContents.findIndex(c => c.id === active.id);
@@ -539,52 +527,34 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
     });
   };
 
-  const clearTimer = () => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-  };
-
-  // [关键配置] 菜单计时器：300ms 就触发 (比拖拽快)
-  const startLongPress = (targetType, id, e) => {
-    if (isSelectionMode) return;
-    clearTimer();
+  // --- 空白区域长按逻辑 (粘贴菜单) ---
+  const handleBgPointerDown = (e) => {
+    if (e.target.dataset.type !== 'folder-bg') return; // 确保点在背景上
     
-    // 必须保留事件对象的副本或坐标，因为 setTimeout 执行时 e 可能已被回收
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    // 清除旧定时器
+    if (bgLongPressTimer.current) clearTimeout(bgLongPressTimer.current);
 
-    longPressTimer.current = setTimeout(() => {
-      // 300ms 后弹出菜单
-      setContextMenu({ x: clientX, y: clientY, targetId: id });
-    }, 300); 
+    const clientX = e.clientX;
+    const clientY = e.clientY;
+
+    bgLongPressTimer.current = setTimeout(() => {
+      setContextMenu({ x: clientX, y: clientY, targetId: 'folder_bg' });
+    }, 600); // 600ms 长按触发粘贴
   };
 
-  // 事件处理保持不变，只是传递给新的逻辑
-  const handleContainerPointerDown = (e) => {
-    if (e.target.dataset.type === 'folder-bg') {
-       startLongPress('bg', 'folder_bg', e);
+  const clearBgTimer = () => {
+    if (bgLongPressTimer.current) {
+      clearTimeout(bgLongPressTimer.current);
+      bgLongPressTimer.current = null;
     }
   };
 
-  const handleItemPointerDown = (id, e) => {
-    if (e.button === 0 || e.pointerType === 'touch') {
-       startLongPress('item', id, e);
-    }
+  // --- 菜单操作 ---
+  const handleMenuClick = (id, e) => {
+      // 按钮触发菜单
+      const rect = e.currentTarget.getBoundingClientRect();
+      setContextMenu({ x: rect.left, y: rect.bottom, targetId: id });
   };
-
-  // 辅助功能逻辑...
-  const handleRename = async () => { if (title.trim()) await db.notes.update(folder.id, { title: title.trim() }); setEditingTitle(false); };
-  const handleCreateWrapper = async (type) => { const newId = await onCreate(type, folder.id); setRenamingId(newId); };
-  const handleItemRenameConfirm = async (id, newName) => { if (newName.trim()) { await db.notes.update(id, { title: newName.trim() }); } setRenamingId(null); };
-  const handleDeleteFolder = async () => { if (confirm('确定删除此文件夹及其内容吗？')) { await deleteNoteRecursive(folder.id); onBack(); } };
-  const handleBulkDelete = async () => { if (confirm(`确定删除选中的 ${selectedIds.size} 项吗？`)) { for (const id of selectedIds) await deleteNoteRecursive(id); setSelectedIds(new Set()); setIsSelectionMode(false); } };
-  const handleBulkMoveConfirm = async (targetId) => { for (const id of selectedIds) { if (id !== targetId) await db.notes.update(id, { parentId: targetId }); } setMoveTargetModal(false); setSelectedIds(new Set()); setIsSelectionMode(false); };
-  const handleContextMenu = (id, e) => { e.preventDefault(); e.stopPropagation(); if (isSelectionMode) return; setContextMenu({ x: e.clientX, y: e.clientY, targetId: id }); };
-  const handleContainerContextMenu = (e) => { e.preventDefault(); if(e.target.dataset.type === 'folder-bg') setContextMenu({ x: e.clientX, y: e.clientY, targetId: 'folder_bg' }); };
-  const toggleSelection = (id) => { const newSet = new Set(selectedIds); if (newSet.has(id)) newSet.delete(id); else newSet.add(id); setSelectedIds(newSet); };
-  const onItemClick = (id) => { if (isSelectionMode) { toggleSelection(id); } else { onNavigate(id); } };
 
   const handleMenuAction = (action) => {
     const targetId = contextMenu?.targetId;
@@ -593,15 +563,18 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
     setContextMenu(null);
   };
 
+  // 辅助功能...
+  const handleRename = async () => { if (title.trim()) await db.notes.update(folder.id, { title: title.trim() }); setEditingTitle(false); };
+  const handleCreateWrapper = async (type) => { const newId = await onCreate(type, folder.id); setRenamingId(newId); };
+  const handleItemRenameConfirm = async (id, newName) => { if (newName.trim()) { await db.notes.update(id, { title: newName.trim() }); } setRenamingId(null); };
+  const handleDeleteFolder = async () => { if (confirm('确定删除此文件夹及其内容吗？')) { await deleteNoteRecursive(folder.id); onBack(); } };
+  const handleBulkDelete = async () => { if (confirm(`确定删除选中的 ${selectedIds.size} 项吗？`)) { for (const id of selectedIds) await deleteNoteRecursive(id); setSelectedIds(new Set()); setIsSelectionMode(false); } };
+  const handleBulkMoveConfirm = async (targetId) => { for (const id of selectedIds) { if (id !== targetId) await db.notes.update(id, { parentId: targetId }); } setMoveTargetModal(false); setSelectedIds(new Set()); setIsSelectionMode(false); };
+  const toggleSelection = (id) => { const newSet = new Set(selectedIds); if (newSet.has(id)) newSet.delete(id); else newSet.add(id); setSelectedIds(newSet); };
+  const onItemClick = (id) => { if (isSelectionMode) { toggleSelection(id); } else { onNavigate(id); } };
+
   return (
-    <div 
-        className="flex flex-col h-full bg-white relative" 
-        onContextMenu={handleContainerContextMenu}
-        onPointerUp={clearTimer}
-        onPointerLeave={clearTimer} // 鼠标离开区域也取消
-        // 注意：onPointerMove 不再取消 timer，因为手指微动是允许的 (tolerance: 8)
-        // 只有大幅移动变成 drag 时，handleDragStart 会负责取消
-    >
+    <div className="flex flex-col h-full bg-white relative">
       <div className="p-4 border-b border-gray-100 flex items-center gap-3 sticky top-0 bg-white/95 backdrop-blur z-10">
         {folder.parentId !== 'root' && (<button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500"><ArrowUpLeft size={20}/></button>)}
         <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Folder size={24}/></div>
@@ -628,26 +601,25 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
       <div 
         className="flex-1 overflow-y-auto p-4" 
         onClick={() => setContextMenu(null)}
+        // 背景长按监听
         data-type="folder-bg"
-        onPointerDown={handleContainerPointerDown}
+        onPointerDown={handleBgPointerDown}
+        onPointerMove={clearBgTimer} // 移动取消
+        onPointerUp={clearBgTimer}   // 抬起取消
+        onPointerLeave={clearBgTimer}
       >
         {contents.length === 0 ? (
            <div className="h-full flex flex-col items-center justify-center text-gray-300 pointer-events-none"><div className="w-16 h-16 border-2 border-dashed border-gray-200 rounded-xl flex items-center justify-center mb-2"><Folder size={24} className="opacity-20"/></div><p className="text-sm">长按空白处粘贴</p></div>
         ) : (
-           <DndContext 
-              sensors={sensors} 
-              collisionDetection={pointerWithin} 
-              onDragStart={handleDragStart} // [关键] 拖拽开始，关闭菜单
-              onDragEnd={handleDragEnd}
-           >
+           <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragStart={clearBgTimer} onDragEnd={handleDragEnd}>
              <SortableContext items={sortedContents.map(n => n.id)} strategy={rectSortingStrategy}>
                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 pb-20" data-type="folder-bg">
                   {sortedContents.map(item => (
                      <SortableGridItem 
                         key={item.id} item={item} isSelectionMode={isSelectionMode} isSelected={selectedIds.has(item.id)}
                         onClick={(e) => { if(!isSelectionMode && sortConfig.key !== 'order') e.stopPropagation(); onItemClick(item.id); }}
-                        onContextMenu={(e) => handleContextMenu(item.id, e)}
-                        onPointerDown={(e) => handleItemPointerDown(item.id, e)}
+                        // [新增] 传入菜单点击回调
+                        onMenuClick={(e) => handleMenuClick(item.id, e)}
                      >
                         {isSelectionMode && (<div className="absolute top-2 right-2 text-blue-500 z-50">{selectedIds.has(item.id) ? <CheckCircle2 size={20} fill="white"/> : <Circle size={20} className="text-gray-300"/>}</div>)}
                         <div className={cn("w-16 h-16 flex items-center justify-center rounded-2xl shadow-sm transition-transform z-10", item.type === 'folder' ? "bg-blue-100 text-blue-500" : "bg-white border border-gray-200 text-gray-400")}>{item.type === 'folder' ? <Folder size={32} fill="currentColor" className="opacity-80"/> : <FileText size={32} />}</div>
@@ -1011,8 +983,8 @@ function MultiImageUpload({ images = [], onChange, max = 9 }) {
   );
 }
 
-// --- [更新] 可拖拽项：优化触摸样式 ---
-function SortableGridItem({ item, isSelectionMode, isSelected, onClick, onContextMenu, onPointerDown, onPointerMove, children }) {
+// --- [修复版] 可拖拽项：分离拖拽与菜单逻辑 ---
+function SortableGridItem({ item, isSelectionMode, isSelected, onClick, onMenuClick, onContextMenu, children }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
   
   const style = {
@@ -1026,20 +998,41 @@ function SortableGridItem({ item, isSelectionMode, isSelected, onClick, onContex
     <div
       ref={setNodeRef}
       style={style}
+      // dnd-kit 的 listeners 绑定在主容器上，负责长按拖拽
       {...attributes}
       {...listeners}
       onClick={onClick}
       onContextMenu={onContextMenu}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove} 
       className={cn(
-        // [关键] touch-none 禁止浏览器默认滚动/缩放，确保长按能一直被监听
-        "group p-4 rounded-xl border cursor-pointer transition-all flex flex-col items-center gap-3 text-center relative select-none touch-none", 
+        "group p-4 rounded-xl border cursor-pointer transition-all flex flex-col items-center gap-3 text-center relative select-none touch-manipulation",
         isSelectionMode && isSelected ? "bg-blue-50 border-blue-300 ring-2 ring-blue-200" : "hover:bg-gray-50 border-transparent hover:border-gray-200",
         isSelectionMode && !isSelected && "opacity-60 grayscale",
         isDragging && "shadow-2xl scale-105 bg-white ring-2 ring-blue-500 z-50"
       )}
     >
+      {/* [关键] 独立的菜单触发按钮 (右上角三点) */}
+      {!isSelectionMode && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation(); // 阻止冒泡，防止触发点击进入
+            // 阻止 dnd-kit 捕获此按钮的按下事件，防止误触发拖拽
+            onMenuClick(e);
+          }}
+          // 这里使用 onPointerDown 阻止冒泡，确保点击按钮时绝对不会触发拖拽
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute top-1 right-1 p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-full opacity-0 group-hover:opacity-100 transition-opacity z-20"
+        >
+          <MoreVertical size={16} />
+        </button>
+      )}
+
+      {/* 选择模式下的勾选框 */}
+      {isSelectionMode && (
+        <div className="absolute top-2 right-2 text-blue-500 z-20">
+          {isSelected ? <CheckCircle2 size={20} fill="white"/> : <Circle size={20} className="text-gray-300"/>}
+        </div>
+      )}
+
       {children}
     </div>
   );
