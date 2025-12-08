@@ -4,7 +4,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { 
   Plus, Maximize, ArrowLeft, Eye, EyeOff, Trash2, Save, Edit, X, Search, ChevronRight, 
   Folder, FileText, ChevronDown, ChevronRight as ChevronRightIcon, GripVertical, Image as ImageIcon, Tag, 
-  ArrowUpLeft, ArrowRightSquare // [修复] 补全了这里丢失的图标
+  ArrowUpLeft, ArrowRightSquare, PanelLeftClose, PanelLeftOpen // [修复] 补全了这里丢失的图标
 } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay, useDndMonitor } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
@@ -142,12 +142,14 @@ function MistakeSystem() {
 }
 
 // ==========================================
-// 模块二：笔记系统 (NoteSystem)
+// 模块二：笔记系统 (NoteSystem) - [替换此函数]
 // ==========================================
 function NoteSystem() {
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(true); 
+  // [新增] 控制侧边栏宽度状态
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false); 
 
   const allNotes = useLiveQuery(() => db.notes.orderBy('order').toArray()) || [];
 
@@ -171,11 +173,11 @@ function NoteSystem() {
   }, [allNotes, searchTerm]);
 
   const handleCreate = async (type, parentId = 'root') => {
-    const title = type === 'folder' ? '新建文件夹' : '新建知识点';
     await db.notes.add({
       parentId,
       title,
-      type,
+      type: type === 'folder' ? 'folder' : 'file',
+      title: type === 'folder' ? '新建文件夹' : '新建知识点',
       content: [],
       tags: [],
       order: Date.now(),
@@ -185,7 +187,6 @@ function NoteSystem() {
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }), useSensor(KeyboardSensor));
   
-  // 检查循环引用：判断 targetId 是否是 sourceId 的子孙
   const isDescendant = (sourceId, targetId) => {
     if (sourceId === targetId) return true;
     let current = allNotes.find(n => n.id === targetId);
@@ -204,11 +205,7 @@ function NoteSystem() {
     const overNode = allNotes.find(n => n.id === over.id);
 
     if (!activeNode || !overNode) return;
-
-    // [修复] 防止循环嵌套
-    if (isDescendant(activeNode.id, overNode.id)) {
-      return; 
-    }
+    if (isDescendant(activeNode.id, overNode.id)) return;
 
     if (overNode.type === 'folder' && activeNode.parentId !== overNode.id) {
        await db.notes.update(activeNode.id, { parentId: overNode.id });
@@ -216,10 +213,8 @@ function NoteSystem() {
        if (activeNode.parentId !== overNode.parentId) {
          await db.notes.update(activeNode.id, { parentId: overNode.parentId, order: overNode.order });
        } else {
-         const newOrder = overNode.order;
-         const oldOrder = activeNode.order;
-         await db.notes.update(activeNode.id, { order: newOrder });
-         await db.notes.update(overNode.id, { order: oldOrder });
+         await db.notes.update(activeNode.id, { order: overNode.order });
+         await db.notes.update(overNode.id, { order: activeNode.order });
        }
     }
   };
@@ -233,16 +228,31 @@ function NoteSystem() {
 
   return (
     <div className="flex h-full bg-white">
-      {/* 左侧目录栏 */}
-      <div className={cn("w-64 bg-gray-50 border-r border-gray-200 flex flex-col transition-all duration-300 absolute md:relative z-20 h-full", !mobileMenuOpen && "-translate-x-full md:translate-x-0 md:w-64")}>
-        <div className="p-3 border-b border-gray-200 flex gap-2">
-          <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full text-xs bg-white border rounded px-2 py-1.5 focus:outline-blue-500" placeholder="搜索标签或标题..." />
+      {/* 左侧目录栏 - [修改] 动态宽度 + 横向滚动 */}
+      <div 
+        className={cn(
+            "bg-gray-50 border-r border-gray-200 flex flex-col transition-all duration-300 absolute md:relative z-20 h-full shadow-lg md:shadow-none", 
+            !mobileMenuOpen && "-translate-x-full md:translate-x-0",
+            isSidebarExpanded ? "w-96" : "w-64" // [关键] 宽度切换逻辑
+        )}
+      >
+        <div className="p-3 border-b border-gray-200 flex gap-2 items-center">
+          <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full text-xs bg-white border rounded px-2 py-1.5 focus:outline-blue-500" placeholder="搜索..." />
+          {/* [新增] 展开/收起按钮 */}
+          <button 
+             onClick={() => setIsSidebarExpanded(!isSidebarExpanded)} 
+             className="hidden md:flex p-1.5 hover:bg-gray-200 rounded text-gray-500 transition"
+             title={isSidebarExpanded ? "收起目录" : "展开目录"}
+          >
+             {isSidebarExpanded ? <PanelLeftClose size={16}/> : <PanelLeftOpen size={16}/>}
+          </button>
           <button onClick={() => setMobileMenuOpen(false)} className="md:hidden"><X size={16}/></button>
         </div>
         
-        <div className="flex-1 overflow-y-auto p-2 scrollbar-hide">
+        {/* [修改] 增加 overflow-x-auto 支持横向滚动 */}
+        <div className="flex-1 overflow-y-auto overflow-x-auto p-2">
           {searchTerm ? (
-            <div className="space-y-1">
+            <div className="space-y-1 min-w-max">
               {filteredNotes.map(note => (
                 <div key={note.id} onClick={() => { setSelectedNodeId(note.id); if(window.innerWidth < 768) setMobileMenuOpen(false); }} className="p-2 bg-white border rounded text-sm cursor-pointer hover:bg-blue-50">
                   <div className="font-bold text-gray-700">{note.title}</div>
@@ -254,7 +264,10 @@ function NoteSystem() {
           ) : (
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
               <SortableContext items={allNotes.map(n => n.id)} strategy={verticalListSortingStrategy}>
-                 <NoteTree nodes={noteTree} selectedId={selectedNodeId} onSelect={(id) => { setSelectedNodeId(id); if(window.innerWidth < 768) setMobileMenuOpen(false); }} onCreate={handleCreate} />
+                 {/* [关键] min-w-max 确保内容不换行，触发滚动 */}
+                 <div className="min-w-max pb-4 pr-4"> 
+                    <NoteTree nodes={noteTree} selectedId={selectedNodeId} onSelect={(id) => { setSelectedNodeId(id); if(window.innerWidth < 768) setMobileMenuOpen(false); }} onCreate={handleCreate} />
+                 </div>
               </SortableContext>
             </DndContext>
           )}
@@ -266,10 +279,11 @@ function NoteSystem() {
         </div>
       </div>
 
-      {/* 右侧内容区 */}
       <div className="flex-1 h-full overflow-hidden flex flex-col relative bg-white">
         {!mobileMenuOpen && (
-          <button onClick={() => setMobileMenuOpen(true)} className="absolute top-4 left-4 z-10 p-2 bg-white shadow-md border rounded-full md:hidden"><ChevronRightIcon size={20} /></button>
+          <button onClick={() => setMobileMenuOpen(true)} className="absolute top-4 left-4 z-10 p-2 bg-white shadow-md border rounded-full md:hidden">
+            <ChevronRightIcon size={20} />
+          </button>
         )}
         
         {selectedNode ? (
@@ -294,7 +308,6 @@ function NoteSystem() {
     </div>
   );
 }
-
 // ==========================================
 // 组件库
 // ==========================================
@@ -347,47 +360,88 @@ function TreeNode({ node, selectedId, onSelect, onCreate, level }) {
   );
 }
 
+// --- [修复版] 高效移动弹窗组件 (防死循环) ---
 function MoveModal({ node, allNotes, onClose, onConfirm }) {
-  const isDescendant = (sourceId, targetNode) => {
-    let curr = targetNode;
-    while(curr && curr.parentId !== 'root') {
-        if(curr.parentId === sourceId) return true;
-        curr = allNotes.find(n => n.id === curr.parentId);
-    }
-    return false;
-  };
+  // 使用 useMemo 缓存计算结果，避免每次渲染都重新计算导致卡顿
+  const validTargets = useMemo(() => {
+    // 辅助函数：安全地检查 sourceId 是否是 targetNode 的祖先
+    const isDescendant = (sourceId, targetNode) => {
+      let curr = targetNode;
+      let safeGuard = 0; // [关键] 安全计数器，防止死循环
+      
+      // 如果向上查找超过 500 层，或者找不到父级，或者到了根目录，就停止
+      while(curr && curr.parentId !== 'root' && safeGuard < 500) {
+          if(curr.parentId === sourceId) return true;
+          // 在 allNotes 中查找父级
+          curr = allNotes.find(n => n.id === curr.parentId);
+          safeGuard++;
+      }
+      return false;
+    };
 
-  const validTargets = allNotes
-    .filter(n => n.type === 'folder' && n.id !== node.id && !isDescendant(node.id, n) && n.id !== node.parentId)
-    .sort((a, b) => (a.order || 0) - (b.order || 0));
+    return allNotes
+      .filter(n => n.type === 'folder') // 只能移动到文件夹
+      .filter(n => n.id !== node.id)    // 不能移动到自己
+      .filter(n => n.id !== node.parentId) // 不能原地移动
+      .filter(n => !isDescendant(node.id, n)) // 不能移动到自己的子孙文件夹中
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+  }, [allNotes, node]);
 
+  // 渲染树状选项
   const renderOptions = (parentId = 'root', level = 0) => {
+      // 为了性能，只查找当前层级的子文件夹
       const children = validTargets.filter(n => n.parentId === parentId);
       if (children.length === 0) return null;
+      
       return children.map(folder => (
           <React.Fragment key={folder.id}>
-              <div onClick={() => onConfirm(folder.id)} className="p-3 hover:bg-blue-50 cursor-pointer flex items-center gap-2 border-b border-gray-50 text-sm text-gray-700" style={{ paddingLeft: `${level * 20 + 12}px` }}>
-                  <Folder size={16} className="text-blue-500 fill-blue-100"/>{folder.title}
+              <div 
+                  onClick={() => onConfirm(folder.id)}
+                  className="p-3 hover:bg-blue-50 cursor-pointer flex items-center gap-2 border-b border-gray-50 text-sm text-gray-700 active:bg-blue-100 transition-colors"
+                  style={{ paddingLeft: `${level * 20 + 12}px` }}
+              >
+                  <Folder size={16} className="text-blue-500 fill-blue-100 shrink-0"/>
+                  <span className="truncate">{folder.title}</span>
               </div>
-              {renderOptions(folder.id, level + 1)}
+              {/* 递归限制层级深度，防止栈溢出 */}
+              {level < 20 && renderOptions(folder.id, level + 1)}
           </React.Fragment>
       ));
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm flex flex-col max-h-[80vh]">
-            <div className="p-4 border-b border-gray-100 flex justify-between items-center"><h3 className="font-bold text-gray-800">移动 "{node.title}" 到...</h3><button onClick={onClose}><X size={20} className="text-gray-400"/></button></div>
+    <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4 animate-in fade-in duration-200">
+        <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm flex flex-col max-h-[80vh] overflow-hidden">
+            <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+                <h3 className="font-bold text-gray-800 truncate pr-4">将 "{node.title}" 移动到...</h3>
+                <button onClick={onClose} className="p-1 hover:bg-gray-200 rounded-full text-gray-500 transition"><X size={20}/></button>
+            </div>
+            
             <div className="flex-1 overflow-y-auto">
-                {node.parentId !== 'root' && (<div onClick={() => onConfirm('root')} className="p-3 hover:bg-blue-50 cursor-pointer flex items-center gap-2 border-b border-gray-50 text-sm font-bold text-gray-800 bg-gray-50"><Folder size={16} className="text-gray-500"/>根目录 (Root)</div>)}
+                {/* 根目录选项 */}
+                {node.parentId !== 'root' && (
+                    <div onClick={() => onConfirm('root')} className="p-3 hover:bg-blue-50 cursor-pointer flex items-center gap-2 border-b border-gray-50 text-sm font-bold text-gray-800 bg-gray-50/50">
+                        <Folder size={16} className="text-gray-500"/>
+                        根目录 (Root)
+                    </div>
+                )}
+                
+                {/* 文件夹树 */}
                 {renderOptions('root', 0)}
-                {validTargets.length === 0 && node.parentId === 'root' && <div className="p-8 text-center text-gray-400 text-xs">没有其他可移动的目标文件夹</div>}
+                
+                {validTargets.length === 0 && node.parentId === 'root' && (
+                    <div className="p-8 text-center text-gray-400 text-xs flex flex-col items-center">
+                        <Folder size={32} className="mb-2 opacity-20"/>
+                        没有其他可移动的目标文件夹
+                    </div>
+                )}
             </div>
         </div>
     </div>
   );
 }
 
+// --- [更新] 文件夹资源管理器视图 ---
 function FolderView({ folder, contents, onNavigate, onCreate, onBack }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState(folder.title);
@@ -398,7 +452,14 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack }) {
 
   const handleRename = async () => { if (title.trim() && title !== folder.title) { await db.notes.update(folder.id, { title: title.trim() }); } setEditingTitle(false); };
   const handleDelete = async () => { if (confirm(`确定要删除文件夹 "${folder.title}" 吗？\n里面的所有内容都将被永久删除！`)) { await deleteNoteRecursive(folder.id); onBack(); } };
-  const handleMoveConfirm = async (targetId) => { if (moveTargetNode) { await db.notes.update(moveTargetNode.id, { parentId: targetId }); setMoveTargetNode(null); } };
+  
+  // 移动确认逻辑
+  const handleMoveConfirm = async (targetId) => { 
+      if (moveTargetNode) { 
+          await db.notes.update(moveTargetNode.id, { parentId: targetId }); 
+          setMoveTargetNode(null); 
+      } 
+  };
 
   return (
     <div className="flex flex-col h-full bg-white">
@@ -429,13 +490,28 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack }) {
                        <div className="font-medium text-gray-700 text-sm truncate group-hover:text-blue-700">{item.title}</div>
                        <div className="text-[10px] text-gray-400 mt-1">{new Date(item.createdAt).toLocaleDateString()}</div>
                     </div>
-                    <button onClick={(e) => { e.stopPropagation(); setMoveTargetNode(item); }} className="absolute top-2 right-2 p-1.5 bg-white shadow-md rounded-full text-gray-500 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity z-20" title="移动到..."><ArrowRightSquare size={14}/></button>
+                    {/* 移动按钮 */}
+                    <button 
+                        onClick={(e) => { e.stopPropagation(); setMoveTargetNode(item); }} 
+                        className="absolute top-2 right-2 p-1.5 bg-white shadow-md rounded-full text-gray-500 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity z-20" 
+                        title="移动到..."
+                    >
+                        <ArrowRightSquare size={14}/>
+                    </button>
                  </div>
               ))}
            </div>
         )}
       </div>
-      {moveTargetNode && (<MoveModal node={moveTargetNode} allNotes={allNotes} onClose={() => setMoveTargetNode(null)} onConfirm={handleMoveConfirm}/>)}
+      {/* 弹窗渲染：确保 allNotes 传递正确 */}
+      {moveTargetNode && (
+          <MoveModal 
+            node={moveTargetNode} 
+            allNotes={allNotes} 
+            onClose={() => setMoveTargetNode(null)} 
+            onConfirm={handleMoveConfirm}
+          />
+      )}
     </div>
   );
 }
