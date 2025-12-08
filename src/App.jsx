@@ -3,7 +3,7 @@ import { db } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { 
   Plus, Maximize, ArrowLeft, Eye, EyeOff, Trash2, Save, Edit, X, Search, ChevronRight, 
-  Folder, FileText, ChevronDown, ChevronRight as ChevronRightIcon, GripVertical, Image as ImageIcon, Tag
+  Folder, FileText, ChevronDown, ChevronRight as ChevronRightIcon, GripVertical, Image as ImageIcon, Tag, ArrowUpLeft
 } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay, useDndMonitor } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
@@ -20,7 +20,7 @@ const fileToBase64 = (file) => new Promise((resolve, reject) => {
   reader.onerror = error => reject(error);
 });
 const generateId = () => Math.random().toString(36).substr(2, 9);
-const APP_VERSION = "v2.2.0 (完整修复版)";
+const APP_VERSION = "v3.0.0 (终极完整版)";
 
 // ==========================================
 // 主入口 App
@@ -77,7 +77,7 @@ function App() {
 }
 
 // ==========================================
-// 子系统 1: 错题本 (Mistake System)
+// 模块一：错题本系统 (MistakeSystem)
 // ==========================================
 function MistakeSystem() {
   const [view, setView] = useState('list'); 
@@ -126,7 +126,7 @@ function MistakeSystem() {
               </div>
               <input 
                 type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="搜索错题..." 
+                placeholder="搜索错题、备注或日期..." 
                 className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm transition"
               />
             </div>
@@ -146,7 +146,7 @@ function MistakeSystem() {
 }
 
 // ==========================================
-// 子系统 2: 笔记系统 (Note System)
+// 模块二：笔记系统 (NoteSystem)
 // ==========================================
 function NoteSystem() {
   const [selectedNodeId, setSelectedNodeId] = useState(null);
@@ -233,7 +233,7 @@ function NoteSystem() {
           <button onClick={() => setMobileMenuOpen(false)} className="md:hidden"><X size={16}/></button>
         </div>
         
-        <div className="flex-1 overflow-y-auto p-2 scrollbar-hide">
+        <div className="flex-1 overflow-y-auto p-2">
           {searchTerm ? (
             <div className="space-y-1">
               {filteredNotes.map(note => (
@@ -269,14 +269,20 @@ function NoteSystem() {
         
         {selectedNode ? (
           selectedNode.type === 'folder' ? (
-            <FolderView folder={selectedNode} contents={folderContents} onNavigate={setSelectedNodeId} onCreate={handleCreate}/>
+            <FolderView 
+              folder={selectedNode} 
+              contents={folderContents} 
+              onNavigate={setSelectedNodeId} 
+              onCreate={handleCreate}
+              onBack={() => setSelectedNodeId(selectedNode.parentId === 'root' ? null : selectedNode.parentId)}
+            />
           ) : (
             <NoteEditor nodeId={selectedNodeId} onBack={() => setMobileMenuOpen(true)} />
           )
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-gray-300 select-none">
             <Folder size={64} className="mb-4 opacity-20"/>
-            <p>选择文件夹或知识点</p>
+            <p className="mt-2">从左侧选择知识点或文件夹</p>
           </div>
         )}
       </div>
@@ -284,7 +290,10 @@ function NoteSystem() {
   );
 }
 
-// --- 目录树节点组件 ---
+// ==========================================
+// 组件库：笔记系统组件
+// ==========================================
+
 function NoteTree({ nodes, selectedId, onSelect, onCreate, level = 0 }) {
   return (
     <div className="space-y-0.5">
@@ -334,11 +343,13 @@ function TreeNode({ node, selectedId, onSelect, onCreate, level }) {
   );
 }
 
-// --- 文件夹视图 ---
-function FolderView({ folder, contents, onNavigate, onCreate }) {
+function FolderView({ folder, contents, onNavigate, onCreate, onBack }) {
   return (
     <div className="flex flex-col h-full bg-white">
       <div className="p-4 border-b border-gray-100 flex items-center gap-3 sticky top-0 bg-white/95 backdrop-blur z-10">
+        {folder.parentId !== 'root' && (
+           <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500"><ArrowUpLeft size={20}/></button>
+        )}
         <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Folder size={24}/></div>
         <div className="flex-1"><h2 className="text-xl font-bold text-gray-800">{folder.title}</h2><p className="text-xs text-gray-400">{contents.length} 个项目</p></div>
         <div className="flex gap-2">
@@ -369,7 +380,6 @@ function FolderView({ folder, contents, onNavigate, onCreate }) {
   );
 }
 
-// --- 知识点编辑器 ---
 function NoteEditor({ nodeId, onBack }) {
   const note = useLiveQuery(() => db.notes.get(nodeId), [nodeId]);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -433,7 +443,10 @@ function NoteEditor({ nodeId, onBack }) {
   );
 }
 
-// --- 错题本复用组件 ---
+// ==========================================
+// 组件库：错题本系统组件
+// ==========================================
+
 function MistakeList({ mistakes, onAdd, onOpen }) {
   if (!mistakes) return <div className="text-center mt-20 text-gray-400">加载数据中...</div>;
   if (mistakes.length === 0) return <div className="flex flex-col items-center justify-center mt-10 text-gray-400 p-4"><div className="mb-4 p-4 bg-gray-200 rounded-full">📝</div><p className="mb-6 font-medium">没有找到相关错题</p><button onClick={onAdd} className="bg-blue-600 text-white px-6 py-2 rounded-full font-bold shadow-lg hover:bg-blue-700 transition text-sm">添加错题</button></div>;
@@ -461,10 +474,24 @@ function MistakeForm({ mode, initialData, onFinish, onCancel }) {
   const [reflection, setReflection] = useState(initialData?.reflection || '');
   const [analysisText, setAnalysisText] = useState(initialData?.analysisText || '');
   const [loading, setLoading] = useState(false);
-  const handleSubmit = async () => { if (!qImg) return alert("必须上传题目图片"); setLoading(true); const data = { title, questionImg: qImg, analysisImg: aImg, analysisText, reflection }; try { if (isEdit) await db.mistakes.update(initialData.id, data); else await db.mistakes.add({ ...data, createdAt: new Date() }); onFinish(); } catch (e) { alert("保存失败"); } finally { setLoading(false); } };
+
+  const handleSubmit = async () => {
+    if (!qImg) return alert("必须上传题目图片");
+    setLoading(true);
+    const data = { title, questionImg: qImg, analysisImg: aImg, analysisText, reflection };
+    try {
+      if (isEdit) await db.mistakes.update(initialData.id, data);
+      else await db.mistakes.add({ ...data, createdAt: new Date() });
+      onFinish();
+    } catch (e) { alert("保存失败"); } finally { setLoading(false); }
+  };
+
   return (
     <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl p-4 sm:p-6 pb-20 space-y-5 relative">
-      <div className="flex justify-between items-center mb-2"><h2 className="text-lg font-bold text-gray-800">{isEdit ? '编辑错题' : '记录错题'}</h2>{isEdit && <button onClick={onCancel}><X size={24} className="text-gray-400"/></button>}</div>
+      <div className="flex justify-between items-center mb-2">
+         <h2 className="text-lg font-bold text-gray-800">{isEdit ? '编辑错题' : '记录错题'}</h2>
+         {isEdit && <button onClick={onCancel}><X size={24} className="text-gray-400"/></button>}
+      </div>
       <div className="space-y-4">
         <div><label className="block text-sm font-bold text-gray-700 mb-2">1. 题目图片 <span className="text-red-500">*</span></label><ImageUpload value={qImg} onChange={setQImg} /></div>
         <div><label className="block text-sm font-bold text-gray-700 mb-2">标题 / 备注</label><input type="text" value={title} onChange={e => setTitle(e.target.value)} placeholder="例如：极限计算" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:border-blue-500 transition" /></div>
@@ -489,10 +516,14 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onBack }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
   useEffect(() => { setShowAnalysis(false); }, [mistake.id]);
   const handleDelete = async () => { if(confirm('删除后无法恢复，确定吗？')) { await db.mistakes.delete(mistake.id); onDelete(); } }
+
   return (
     <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl pb-24 overflow-hidden relative">
       <div className="p-4 border-b border-gray-100 flex justify-between items-start bg-white sticky top-0 z-10">
-        <div className="flex items-center gap-2"><button onClick={onBack} className="md:hidden p-1 -ml-2"><ArrowLeft size={20}/></button><div><h2 className="font-bold text-lg text-gray-900 leading-snug">{mistake.title || "题目详情"}</h2><p className="text-xs text-gray-400 mt-1">{new Date(mistake.createdAt).toLocaleString()}</p></div></div>
+        <div className="flex items-center gap-2">
+           <button onClick={onBack} className="md:hidden p-1 -ml-2"><ArrowLeft size={20}/></button>
+           <div><h2 className="font-bold text-lg text-gray-900 leading-snug">{mistake.title || "题目详情"}</h2><p className="text-xs text-gray-400 mt-1">{new Date(mistake.createdAt).toLocaleString()}</p></div>
+        </div>
         <button onClick={onEdit} className="p-2 bg-gray-50 text-blue-600 rounded-lg hover:bg-blue-50"><Edit size={18} /></button>
       </div>
       <div className="p-4 space-y-6">
@@ -507,7 +538,11 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onBack }) {
         </div>
         <div className={cn("space-y-4 transition-all duration-300", showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden')}>
           <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm"><div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div><p className="whitespace-pre-wrap text-gray-800 leading-relaxed">{mistake.reflection || "暂无复盘记录"}</p></div>
-          <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm"><div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>{mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/><div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{mistake.analysisText}</div>}</div>
+          <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm">
+            <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
+            {mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/>}
+            <div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{mistake.analysisText}</div>
+          </div>
           <div className="h-20"></div>
         </div>
       </div>
