@@ -853,24 +853,41 @@ function ImageUpload({ value, onChange, isAnalysis }) {
   )
 }
 
-// --- [更新] 错题详情：展示多张题目图 ---
+// --- [修复版] 错题详情组件 ---
 function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onBack }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
+  
+  // 切换题目时重置解析显示状态
   useEffect(() => { setShowAnalysis(false); }, [mistake.id]);
-  const handleDelete = async () => { if(confirm('删除后无法恢复，确定吗？')) { await db.mistakes.delete(mistake.id); onDelete(); } }
+  
+  const handleDelete = async () => { 
+    if(confirm('删除后无法恢复，确定吗？')) { 
+      await db.mistakes.delete(mistake.id); 
+      onDelete(); 
+    } 
+  }
 
-  // 兼容获取图片数组
+  // 兼容多图和单图数据
   const images = mistake.questionImages || (mistake.questionImg ? [mistake.questionImg] : []);
 
   return (
     <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl pb-24 overflow-hidden relative">
+      {/* 顶部标题栏 */}
       <div className="p-4 border-b border-gray-100 flex justify-between items-start bg-white sticky top-0 z-10">
-        <div className="flex items-center gap-2"><button onClick={onBack} className="md:hidden p-1 -ml-2"><ArrowLeft size={20}/></button><div><h2 className="font-bold text-lg text-gray-900 leading-snug">{mistake.title || "题目详情"}</h2><p className="text-xs text-gray-400 mt-1">{new Date(mistake.createdAt).toLocaleString()}</p></div></div>
-        <button onClick={onEdit} className="p-2 bg-gray-50 text-blue-600 rounded-lg hover:bg-blue-50"><Edit size={18} /></button>
+        <div className="flex items-center gap-2">
+           <button onClick={onBack} className="md:hidden p-1 -ml-2"><ArrowLeft size={20}/></button>
+           <div>
+             <h2 className="font-bold text-lg text-gray-900 leading-snug">{mistake.title || "题目详情"}</h2>
+             <p className="text-xs text-gray-400 mt-1">{new Date(mistake.createdAt).toLocaleString()}</p>
+           </div>
+        </div>
+        <button onClick={onEdit} className="p-2 bg-gray-50 text-blue-600 rounded-lg hover:bg-blue-50">
+          <Edit size={18} />
+        </button>
       </div>
-      
+
       <div className="p-4 space-y-6">
-        {/* 题目图片区域：遍历显示所有图片 */}
+        {/* 题目图片区域 (支持多图) */}
         <div className="space-y-2">
           {images.map((img, idx) => (
             <div key={idx} className="rounded-xl overflow-hidden border border-gray-100 shadow-sm relative">
@@ -878,19 +895,54 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onBack }) {
                {images.length > 1 && <div className="absolute top-2 left-2 bg-black/50 text-white text-xs px-2 py-1 rounded-full backdrop-blur-md">{idx + 1}/{images.length}</div>}
             </div>
           ))}
+          {images.length === 0 && <div className="p-8 text-center text-gray-300 bg-gray-50 rounded-xl">无图片</div>}
         </div>
 
+        {/* 底部悬浮控制栏 */}
         <div className="fixed bottom-20 w-full max-w-3xl left-1/2 -translate-x-1/2 px-4 z-20 flex items-center justify-center pointer-events-none">
           <div className="bg-white/95 backdrop-blur-md p-2 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.15)] border border-gray-200 flex items-center gap-3 pointer-events-auto">
              <button onClick={handleDelete} className="p-3 rounded-full text-red-400 hover:bg-red-50 transition"><Trash2 size={20} /></button>
+             
              <div className="h-6 w-[1px] bg-gray-200"></div>
-             <button onClick={() => setShowAnalysis(!showAnalysis)} className={cn("flex items-center gap-2 px-6 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap", showAnalysis ? 'bg-gray-100 text-gray-700' : 'bg-green-600 text-white shadow-lg')}>{showAnalysis ? <><EyeOff size={18}/> 遮住答案</> : <><Eye size={18}/> 查看解析</>}</button>
-             {hasNext && <><div className="h-6 w-[1px] bg-gray-200"></div><button onClick={onNext} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition"><ChevronRight size={24} /></button></>}
+
+             <button 
+               onClick={() => setShowAnalysis(!showAnalysis)} 
+               className={cn("flex items-center gap-2 px-6 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap", showAnalysis ? 'bg-gray-100 text-gray-700' : 'bg-green-600 text-white shadow-lg')}
+             >
+               {showAnalysis ? <><EyeOff size={18}/> 遮住答案</> : <><Eye size={18}/> 查看解析</>}
+             </button>
+
+             {hasNext && (
+               <>
+                 <div className="h-6 w-[1px] bg-gray-200"></div>
+                 <button onClick={onNext} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition"><ChevronRight size={24} /></button>
+               </>
+             )}
           </div>
         </div>
+
+        {/* 解析区域 (已修复语法错误) */}
         <div className={cn("space-y-4 transition-all duration-300", showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden')}>
-          <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm"><div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div><p className="whitespace-pre-wrap text-gray-800 leading-relaxed">{mistake.reflection || "暂无复盘记录"}</p></div>
-          <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm"><div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>{mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/><div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{mistake.analysisText}</div>}</div>
+          {/* 复盘部分 */}
+          <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm">
+            <div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div>
+            <p className="whitespace-pre-wrap text-gray-800 leading-relaxed">{mistake.reflection || "暂无复盘记录"}</p>
+          </div>
+
+          {/* 标准解析部分 */}
+          <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm">
+             <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
+             
+             {/* 修复点：将图片和文字分开渲染，或确保逻辑正确 */}
+             {mistake.analysisImg && (
+               <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/>
+             )}
+             
+             <div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">
+               {mistake.analysisText}
+             </div>
+          </div>
+          
           <div className="h-20"></div>
         </div>
       </div>
