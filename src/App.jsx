@@ -165,7 +165,7 @@ function MistakeSystem() {
 }
 
 // ==========================================
-// 模块二：笔记系统 (NoteSystem) - [支持创建后返回ID]
+// 模块二：笔记系统 (NoteSystem) - [修复：传递导航函数给编辑器]
 // ==========================================
 function NoteSystem() {
   const [selectedNodeId, setSelectedNodeId] = useState(null);
@@ -192,7 +192,6 @@ function NoteSystem() {
     });
   }, [allNotes, searchTerm]);
 
-  // [关键修改] 这里现在返回新创建的 ID
   const handleCreate = async (type, parentId = 'root') => {
     const newId = await db.notes.add({
       parentId,
@@ -203,7 +202,7 @@ function NoteSystem() {
       order: Date.now(),
       createdAt: new Date()
     });
-    return newId; // 返回 ID 供 UI 聚焦
+    return newId;
   };
 
   const handleAddToClipboard = (ids, mode) => { setClipboard({ items: ids, mode }); };
@@ -310,7 +309,12 @@ function NoteSystem() {
               clipboardCount={clipboard.items.length}
             />
           ) : (
-            <NoteEditor nodeId={selectedNodeId} onBack={() => setMobileMenuOpen(true)} />
+            // [修改] 传递 onNavigate 属性
+            <NoteEditor 
+              nodeId={selectedNodeId} 
+              onNavigate={setSelectedNodeId}
+              onBack={() => setMobileMenuOpen(true)} 
+            />
           )
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-gray-300 select-none"><Folder size={64} className="mb-4 opacity-20"/><p className="mt-2">从左侧选择知识点或文件夹</p></div>
@@ -646,39 +650,77 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
     </div>
   );
 }
-function NoteEditor({ nodeId, onBack }) {
+// --- [更新] 知识点编辑器：支持同层级切换 ---
+function NoteEditor({ nodeId, onBack, onNavigate }) {
   const note = useLiveQuery(() => db.notes.get(nodeId), [nodeId]);
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState('');
   const [newTag, setNewTag] = useState('');
 
+  // [新增] 获取同层级的所有知识点（用于导航）
+  const siblings = useLiveQuery(async () => {
+    if (!note) return [];
+    const items = await db.notes.where('parentId').equals(note.parentId).toArray();
+    // 过滤出只有文件的列表，并按顺序排列
+    return items
+      .filter(n => n.type === 'file')
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+  }, [note?.parentId]);
+
+  // [新增] 计算上一页/下一页 ID
+  const { prevId, nextId } = useMemo(() => {
+    if (!siblings || siblings.length < 2) return { prevId: null, nextId: null };
+    const idx = siblings.findIndex(n => n.id === nodeId);
+    if (idx === -1) return { prevId: null, nextId: null };
+    return {
+      prevId: idx > 0 ? siblings[idx - 1].id : null,
+      nextId: idx < siblings.length - 1 ? siblings[idx + 1].id : null
+    };
+  }, [siblings, nodeId]);
+
   useEffect(() => { if(note) setTitle(note.title); }, [note]);
   if (!note) return <div className="p-10 text-center">加载中...</div>;
 
   const handleUpdate = (updates) => db.notes.update(nodeId, updates);
-  const handleAddImage = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const base64 = await fileToBase64(file);
-    const newContent = [...(note.content || []), { id: generateId(), src: base64, desc: '' }];
-    handleUpdate({ content: newContent });
-  };
+  const handleAddImage = async (e) => { const file = e.target.files[0]; if (!file) return; const base64 = await fileToBase64(file); const newContent = [...(note.content || []), { id: generateId(), src: base64, desc: '' }]; handleUpdate({ content: newContent }); };
   const handleDeleteImage = (imgId) => { handleUpdate({ content: note.content.filter(c => c.id !== imgId) }); }
   const handleAddTag = () => { if(!newTag.trim()) return; const tags = [...(note.tags || [])]; if(!tags.includes(newTag.trim())) { tags.push(newTag.trim()); handleUpdate({ tags }); } setNewTag(''); }
   const handleRemoveTag = (tag) => { handleUpdate({ tags: note.tags.filter(t => t !== tag) }); }
-  const handleDeleteNote = async () => { if(confirm('确定删除此条目吗？如果是文件夹，内容将一并删除。')) { await db.notes.delete(nodeId); onBack(); } }
+  const handleDeleteNote = async () => { if(confirm('确定删除此条目吗？')) { await db.notes.delete(nodeId); onBack(); } }
 
   return (
     <div className="flex flex-col h-full bg-white">
       <div className="p-4 border-b border-gray-100 flex justify-between items-center sticky top-0 bg-white z-10">
-        <div className="flex-1 mr-4">
+        <div className="flex-1 mr-4 overflow-hidden">
            {editingTitle ? (
              <input autoFocus value={title} onChange={e => setTitle(e.target.value)} onBlur={() => { setEditingTitle(false); handleUpdate({ title }); }} onKeyDown={e => { if(e.key === 'Enter') { setEditingTitle(false); handleUpdate({ title }); } }} className="text-xl font-bold w-full border-b border-blue-500 outline-none"/>
            ) : (
              <h2 onClick={() => setEditingTitle(true)} className="text-xl font-bold cursor-pointer hover:bg-gray-50 rounded px-2 -ml-2 truncate">{note.title}</h2>
            )}
-           <div className="text-xs text-gray-400 mt-1 ml-1 flex items-center gap-2">{new Date(note.createdAt).toLocaleDateString()}{note.type === 'folder' && <span className="bg-gray-100 px-1 rounded">文件夹</span>}</div>
+           <div className="text-xs text-gray-400 mt-1 ml-1 flex items-center gap-2">{new Date(note.createdAt).toLocaleDateString()}</div>
         </div>
+        
+        {/* [新增] 导航按钮组 */}
+        <div className="flex items-center gap-1 mr-2 bg-gray-100 p-1 rounded-lg">
+            <button 
+                onClick={() => onNavigate(prevId)} 
+                disabled={!prevId}
+                className="p-1.5 hover:bg-white hover:shadow-sm rounded-md disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:shadow-none transition-all text-gray-600"
+                title="上一篇"
+            >
+                <ChevronRightIcon size={18} className="rotate-180"/> {/* 复用 ChevronRight 并旋转 */}
+            </button>
+            <div className="w-[1px] h-4 bg-gray-300"></div>
+            <button 
+                onClick={() => onNavigate(nextId)} 
+                disabled={!nextId}
+                className="p-1.5 hover:bg-white hover:shadow-sm rounded-md disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:shadow-none transition-all text-gray-600"
+                title="下一篇"
+            >
+                <ChevronRightIcon size={18}/>
+            </button>
+        </div>
+
         <button onClick={handleDeleteNote} className="text-red-400 hover:bg-red-50 p-2 rounded-full"><Trash2 size={20}/></button>
       </div>
       {note.type === 'file' && (
@@ -689,76 +731,112 @@ function NoteEditor({ nodeId, onBack }) {
         </div>
       )}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
-         {note.type === 'folder' ? (
-             <div className="text-center text-gray-400 mt-20"><Folder size={48} className="mx-auto mb-4 opacity-30"/><p>这是文件夹，请在左侧点击 + 号添加子知识点</p></div>
-         ) : (
-             <>
-                {note.content?.map((item, idx) => (
-                    <div key={item.id} className="group relative bg-gray-50 rounded-xl p-2 border border-gray-100">
-                        <img src={item.src} className="w-full rounded-lg" />
-                        <button onClick={() => handleDeleteImage(item.id)} className="absolute top-4 right-4 bg-red-500 text-white p-2 rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition"><Trash2 size={16}/></button>
-                        <textarea placeholder="给这张图写点备注..." className="w-full bg-transparent text-sm mt-2 p-2 outline-none resize-none h-10 focus:bg-white focus:h-20 transition-all rounded" defaultValue={item.desc} onBlur={(e) => { const newContent = [...note.content]; newContent[idx].desc = e.target.value; handleUpdate({ content: newContent }); }}/>
-                    </div>
-                ))}
-                <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 flex flex-col items-center justify-center text-gray-400 hover:bg-gray-50 hover:border-indigo-200 transition cursor-pointer relative"><ImageIcon size={32} className="mb-2"/><span className="text-sm font-bold">添加知识点截图</span><input type="file" accept="image/*" onChange={handleAddImage} className="absolute inset-0 opacity-0 cursor-pointer"/></div>
-             </>
-         )}
+         {/* 内容渲染区域保持不变 */}
+         {note.content?.map((item, idx) => (
+            <div key={item.id} className="group relative bg-gray-50 rounded-xl p-2 border border-gray-100">
+                <img src={item.src} className="w-full rounded-lg" />
+                <button onClick={() => handleDeleteImage(item.id)} className="absolute top-4 right-4 bg-red-500 text-white p-2 rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition"><Trash2 size={16}/></button>
+                <textarea placeholder="给这张图写点备注..." className="w-full bg-transparent text-sm mt-2 p-2 outline-none resize-none h-10 focus:bg-white focus:h-20 transition-all rounded" defaultValue={item.desc} onBlur={(e) => { const newContent = [...note.content]; newContent[idx].desc = e.target.value; handleUpdate({ content: newContent }); }}/>
+            </div>
+         ))}
+         <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 flex flex-col items-center justify-center text-gray-400 hover:bg-gray-50 hover:border-indigo-200 transition cursor-pointer relative"><ImageIcon size={32} className="mb-2"/><span className="text-sm font-bold">添加知识点截图</span><input type="file" accept="image/*" onChange={handleAddImage} className="absolute inset-0 opacity-0 cursor-pointer"/></div>
          <div className="h-20"></div>
       </div>
     </div>
   );
 }
 
-// 错题本复用组件... (已包含在上方 MistakeSystem 模块中)
+// --- [更新] 错题列表：显示第一张图 + 数量角标 ---
 function MistakeList({ mistakes, onAdd, onOpen }) {
   if (!mistakes) return <div className="text-center mt-20 text-gray-400">加载数据中...</div>;
   if (mistakes.length === 0) return <div className="flex flex-col items-center justify-center mt-10 text-gray-400 p-4"><div className="mb-4 p-4 bg-gray-200 rounded-full">📝</div><p className="mb-6 font-medium">没有找到相关错题</p><button onClick={onAdd} className="bg-blue-600 text-white px-6 py-2 rounded-full font-bold shadow-lg hover:bg-blue-700 transition text-sm">添加错题</button></div>;
+  
   return (
     <div className="space-y-3">
-      {mistakes.map((item) => (
-        <div key={item.id} onClick={() => onOpen(item.id)} className="bg-white rounded-xl shadow-sm border border-gray-200 active:scale-[0.98] transition-transform cursor-pointer overflow-hidden flex h-36">
-          <div className="w-[35%] p-3 flex flex-col justify-between border-r border-gray-100 bg-white z-10">
-            <div><h3 className="font-bold text-gray-800 text-sm line-clamp-3 leading-relaxed">{item.title || "未命名"}</h3></div>
-            <div className="space-y-1"><span className={cn("text-[10px] px-2 py-0.5 rounded-full font-medium border", item.reflection ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-gray-100 text-gray-400 border-gray-200')}>{item.reflection ? '已复盘' : '待复盘'}</span><div className="text-[10px] text-gray-400 font-medium pl-0.5">{new Date(item.createdAt).toLocaleDateString(undefined, {month:'2-digit', day:'2-digit'})}</div></div>
+      {mistakes.map((item) => {
+        // 兼容逻辑：优先取数组，没有则取旧字段，最后为空
+        const images = item.questionImages || (item.questionImg ? [item.questionImg] : []);
+        const firstImg = images[0];
+        const count = images.length;
+
+        return (
+          <div key={item.id} onClick={() => onOpen(item.id)} className="bg-white rounded-xl shadow-sm border border-gray-200 active:scale-[0.98] transition-transform cursor-pointer overflow-hidden flex h-36">
+            <div className="w-[35%] p-3 flex flex-col justify-between border-r border-gray-100 bg-white z-10">
+              <div><h3 className="font-bold text-gray-800 text-sm line-clamp-3 leading-relaxed">{item.title || "未命名"}</h3></div>
+              <div className="space-y-1"><span className={cn("text-[10px] px-2 py-0.5 rounded-full font-medium border", item.reflection ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-gray-100 text-gray-400 border-gray-200')}>{item.reflection ? '已复盘' : '待复盘'}</span><div className="text-[10px] text-gray-400 font-medium pl-0.5">{new Date(item.createdAt).toLocaleDateString(undefined, {month:'2-digit', day:'2-digit'})}</div></div>
+            </div>
+            <div className="flex-1 relative bg-gray-50 h-full group">
+              {firstImg ? (
+                <>
+                  <img src={firstImg} alt="题目" className="absolute inset-0 w-full h-full object-cover" />
+                  {count > 1 && (
+                    <div className="absolute bottom-2 right-2 bg-black/60 text-white text-xs px-2 py-0.5 rounded-full backdrop-blur-sm flex items-center gap-1">
+                      <ImageIcon size={10}/> +{count - 1}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="flex items-center justify-center h-full text-gray-300 text-xs">无图</div>
+              )}
+            </div>
           </div>
-          <div className="flex-1 relative bg-gray-50 h-full">{item.questionImg ? <img src={item.questionImg} alt="题目" className="absolute inset-0 w-full h-full object-cover" /> : <div className="flex items-center justify-center h-full text-gray-300 text-xs">无图</div>}</div>
-        </div>
-      ))}
+        );
+      })}
       <button onClick={onAdd} className="fixed bottom-20 right-6 bg-blue-600 text-white p-4 rounded-full shadow-[0_4px_14px_rgba(37,99,235,0.4)] hover:bg-blue-700 active:scale-90 transition-all z-40"><Plus size={26} strokeWidth={2.5} /></button>
     </div>
   );
 }
 
+// --- [更新] 错题表单：支持多图上传 ---
 function MistakeForm({ mode, initialData, onFinish, onCancel }) {
   const isEdit = mode === 'edit';
   const [title, setTitle] = useState(initialData?.title || '');
-  const [qImg, setQImg] = useState(initialData?.questionImg || null);
-  const [aImg, setAImg] = useState(initialData?.analysisImg || null);
+  
+  // 初始化图片状态：兼容旧数据 (string -> array)
+  const [qImages, setQImages] = useState(
+    initialData?.questionImages || (initialData?.questionImg ? [initialData.questionImg] : [])
+  );
+  
+  const [aImg, setAImg] = useState(initialData?.analysisImg || null); // 解析图暂时保持单张，如果需要也可改为多张
   const [reflection, setReflection] = useState(initialData?.reflection || '');
   const [analysisText, setAnalysisText] = useState(initialData?.analysisText || '');
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async () => {
-    if (!qImg) return alert("必须上传题目图片");
+    if (qImages.length === 0) return alert("请至少上传一张题目图片");
     setLoading(true);
-    const data = { title, questionImg: qImg, analysisImg: aImg, analysisText, reflection };
+    
+    const data = { 
+      title, 
+      questionImages: qImages, // 保存数组
+      questionImg: qImages[0], // 冗余保存第一张，防止旧代码报错（可选）
+      analysisImg: aImg, 
+      analysisText, 
+      reflection 
+    };
+    
     try {
       if (isEdit) await db.mistakes.update(initialData.id, data);
       else await db.mistakes.add({ ...data, createdAt: new Date() });
       onFinish();
-    } catch (e) { alert("保存失败"); } finally { setLoading(false); }
+    } catch (e) { alert("保存失败"); console.error(e); } finally { setLoading(false); }
   };
 
   return (
     <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl p-4 sm:p-6 pb-20 space-y-5 relative">
-      <div className="flex justify-between items-center mb-2">
-         <h2 className="text-lg font-bold text-gray-800">{isEdit ? '编辑错题' : '记录错题'}</h2>
-         {isEdit && <button onClick={onCancel}><X size={24} className="text-gray-400"/></button>}
-      </div>
+      <div className="flex justify-between items-center mb-2"><h2 className="text-lg font-bold text-gray-800">{isEdit ? '编辑错题' : '记录错题'}</h2>{isEdit && <button onClick={onCancel}><X size={24} className="text-gray-400"/></button>}</div>
       <div className="space-y-4">
-        <div><label className="block text-sm font-bold text-gray-700 mb-2">1. 题目图片 <span className="text-red-500">*</span></label><ImageUpload value={qImg} onChange={setQImg} /></div>
+        
+        {/* 题目多图上传区 */}
+        <div>
+          <label className="block text-sm font-bold text-gray-700 mb-2">1. 题目图片 ({qImages.length}) <span className="text-red-500">*</span></label>
+          <MultiImageUpload images={qImages} onChange={setQImages} />
+        </div>
+
         <div><label className="block text-sm font-bold text-gray-700 mb-2">标题 / 备注</label><input type="text" value={title} onChange={e => setTitle(e.target.value)} placeholder="例如：极限计算" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:border-blue-500 transition" /></div>
         <div className="border-t border-dashed pt-4"><label className="block text-sm font-bold text-gray-700 mb-2">2. 复盘思路</label><textarea value={reflection} onChange={e => setReflection(e.target.value)} className="w-full p-3 bg-yellow-50 border border-yellow-200 rounded-xl h-28 text-sm outline-none focus:border-yellow-400 resize-none" placeholder="关键点在哪里？"></textarea></div>
+        
+        {/* 解析区保持原样 (如果解析也想多图，可以用同样的 MultiImageUpload) */}
         <div className="border-t border-dashed pt-4"><label className="block text-sm font-bold text-gray-700 mb-2">3. 答案解析</label><ImageUpload value={aImg} onChange={setAImg} isAnalysis /><textarea value={analysisText} onChange={e => setAnalysisText(e.target.value)} className="w-full mt-3 p-3 bg-gray-50 border border-gray-200 rounded-xl h-20 text-sm outline-none focus:border-green-500 resize-none" placeholder="文字解析..."></textarea></div>
       </div>
       <button onClick={handleSubmit} disabled={loading} className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-bold shadow-md mt-4 flex justify-center items-center gap-2"><Save size={18} /> {loading ? '保存中...' : '保存'}</button>
@@ -775,22 +853,33 @@ function ImageUpload({ value, onChange, isAnalysis }) {
   )
 }
 
+// --- [更新] 错题详情：展示多张题目图 ---
 function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onBack }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
   useEffect(() => { setShowAnalysis(false); }, [mistake.id]);
   const handleDelete = async () => { if(confirm('删除后无法恢复，确定吗？')) { await db.mistakes.delete(mistake.id); onDelete(); } }
 
+  // 兼容获取图片数组
+  const images = mistake.questionImages || (mistake.questionImg ? [mistake.questionImg] : []);
+
   return (
     <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl pb-24 overflow-hidden relative">
       <div className="p-4 border-b border-gray-100 flex justify-between items-start bg-white sticky top-0 z-10">
-        <div className="flex items-center gap-2">
-           <button onClick={onBack} className="md:hidden p-1 -ml-2"><ArrowLeft size={20}/></button>
-           <div><h2 className="font-bold text-lg text-gray-900 leading-snug">{mistake.title || "题目详情"}</h2><p className="text-xs text-gray-400 mt-1">{new Date(mistake.createdAt).toLocaleString()}</p></div>
-        </div>
+        <div className="flex items-center gap-2"><button onClick={onBack} className="md:hidden p-1 -ml-2"><ArrowLeft size={20}/></button><div><h2 className="font-bold text-lg text-gray-900 leading-snug">{mistake.title || "题目详情"}</h2><p className="text-xs text-gray-400 mt-1">{new Date(mistake.createdAt).toLocaleString()}</p></div></div>
         <button onClick={onEdit} className="p-2 bg-gray-50 text-blue-600 rounded-lg hover:bg-blue-50"><Edit size={18} /></button>
       </div>
+      
       <div className="p-4 space-y-6">
-        <div className="rounded-xl overflow-hidden border border-gray-100 shadow-sm"><img src={mistake.questionImg} alt="题目" className="w-full" /></div>
+        {/* 题目图片区域：遍历显示所有图片 */}
+        <div className="space-y-2">
+          {images.map((img, idx) => (
+            <div key={idx} className="rounded-xl overflow-hidden border border-gray-100 shadow-sm relative">
+               <img src={img} alt={`题目 ${idx+1}`} className="w-full" />
+               {images.length > 1 && <div className="absolute top-2 left-2 bg-black/50 text-white text-xs px-2 py-1 rounded-full backdrop-blur-md">{idx + 1}/{images.length}</div>}
+            </div>
+          ))}
+        </div>
+
         <div className="fixed bottom-20 w-full max-w-3xl left-1/2 -translate-x-1/2 px-4 z-20 flex items-center justify-center pointer-events-none">
           <div className="bg-white/95 backdrop-blur-md p-2 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.15)] border border-gray-200 flex items-center gap-3 pointer-events-auto">
              <button onClick={handleDelete} className="p-3 rounded-full text-red-400 hover:bg-red-50 transition"><Trash2 size={20} /></button>
@@ -801,14 +890,67 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onBack }) {
         </div>
         <div className={cn("space-y-4 transition-all duration-300", showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden')}>
           <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm"><div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div><p className="whitespace-pre-wrap text-gray-800 leading-relaxed">{mistake.reflection || "暂无复盘记录"}</p></div>
-          <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm">
-            <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
-            {mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/>}
-            <div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{mistake.analysisText}</div>
-          </div>
+          <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm"><div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>{mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/><div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{mistake.analysisText}</div>}</div>
           <div className="h-20"></div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// --- [新增] 多图上传组件 ---
+function MultiImageUpload({ images = [], onChange, max = 9 }) {
+  const handleFile = async (e) => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+    
+    // 限制数量
+    if (images.length + files.length > max) {
+      alert(`最多只能上传 ${max} 张图片`);
+      return;
+    }
+
+    const base64Promises = files.map(fileToBase64);
+    const newImages = await Promise.all(base64Promises);
+    onChange([...images, ...newImages]);
+  };
+
+  const removeImage = (index) => {
+    const newImages = [...images];
+    newImages.splice(index, 1);
+    onChange(newImages);
+  };
+
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {images.map((img, idx) => (
+        <div key={idx} className="relative aspect-square rounded-lg overflow-hidden border border-gray-200 group">
+          <img src={img} className="w-full h-full object-cover" />
+          <button 
+            onClick={() => removeImage(idx)}
+            className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full shadow-md opacity-0 group-hover:opacity-100 transition-opacity"
+          >
+            <X size={12} />
+          </button>
+          <div className="absolute bottom-1 right-1 bg-black/50 text-white text-[10px] px-1.5 rounded-full backdrop-blur-sm">
+            {idx + 1}
+          </div>
+        </div>
+      ))}
+      
+      {images.length < max && (
+        <div className="relative aspect-square border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center text-gray-400 hover:bg-gray-50 hover:border-blue-300 transition cursor-pointer">
+          <Plus size={24} />
+          <span className="text-xs mt-1">添加图片</span>
+          <input 
+            type="file" 
+            accept="image/*" 
+            multiple // 允许选择多张
+            onChange={handleFile} 
+            className="absolute inset-0 opacity-0 cursor-pointer"
+          />
+        </div>
+      )}
     </div>
   );
 }
