@@ -3,7 +3,8 @@ import { db } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { 
   Plus, Maximize, ArrowLeft, Eye, EyeOff, Trash2, Save, Edit, X, Search, ChevronRight, 
-  Folder, FileText, ChevronDown, ChevronRight as ChevronRightIcon, GripVertical, Image as ImageIcon, Tag, ArrowUpLeft
+  Folder, FileText, ChevronDown, ChevronRight as ChevronRightIcon, GripVertical, Image as ImageIcon, Tag, 
+  ArrowUpLeft, ArrowRightSquare // [修复] 补全了这里丢失的图标
 } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay, useDndMonitor } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
@@ -12,18 +13,6 @@ import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
 // --- 工具函数 ---
-const deleteNoteRecursive = async (nodeId) => {
-  // 1. 查找所有子节点
-  const children = await db.notes.where('parentId').equals(nodeId).toArray();
-  
-  // 2. 递归删除每一个子节点
-  for (const child of children) {
-    await deleteNoteRecursive(child.id);
-  }
-  
-  // 3. 删除自己
-  await db.notes.delete(nodeId);
-};
 function cn(...inputs) { return twMerge(clsx(inputs)); }
 const fileToBase64 = (file) => new Promise((resolve, reject) => {
   const reader = new FileReader();
@@ -32,13 +21,22 @@ const fileToBase64 = (file) => new Promise((resolve, reject) => {
   reader.onerror = error => reject(error);
 });
 const generateId = () => Math.random().toString(36).substr(2, 9);
-const APP_VERSION = "v3.0.0 (终极完整版)";
+const APP_VERSION = "v3.1.0 (稳定修复版)";
+
+// [新增] 递归删除辅助函数
+const deleteNoteRecursive = async (nodeId) => {
+  const children = await db.notes.where('parentId').equals(nodeId).toArray();
+  for (const child of children) {
+    await deleteNoteRecursive(child.id);
+  }
+  await db.notes.delete(nodeId);
+};
 
 // ==========================================
 // 主入口 App
 // ==========================================
 function App() {
-  const [activeTab, setActiveTab] = useState('mistakes'); // 'mistakes' | 'notes'
+  const [activeTab, setActiveTab] = useState('mistakes'); 
 
   const toggleFullScreen = () => {
     if (!document.fullscreenElement) {
@@ -67,19 +65,11 @@ function App() {
 
       {/* 底部导航栏 */}
       <div className="bg-white border-t border-gray-200 p-2 flex justify-around items-center shrink-0 safe-area-bottom pb-4 z-40">
-        <button 
-          onClick={() => setActiveTab('mistakes')}
-          className={cn("flex flex-col items-center gap-1 p-2 rounded-xl transition-all w-24", activeTab === 'mistakes' ? "text-blue-600 bg-blue-50" : "text-gray-400 hover:bg-gray-50")}
-        >
-          <div className="relative">
-            <Edit size={24} strokeWidth={activeTab === 'mistakes' ? 2.5 : 2} />
-          </div>
+        <button onClick={() => setActiveTab('mistakes')} className={cn("flex flex-col items-center gap-1 p-2 rounded-xl transition-all w-24", activeTab === 'mistakes' ? "text-blue-600 bg-blue-50" : "text-gray-400 hover:bg-gray-50")}>
+          <div className="relative"><Edit size={24} strokeWidth={activeTab === 'mistakes' ? 2.5 : 2} /></div>
           <span className="text-[10px] font-bold">错题本</span>
         </button>
-        <button 
-          onClick={() => setActiveTab('notes')}
-          className={cn("flex flex-col items-center gap-1 p-2 rounded-xl transition-all w-24", activeTab === 'notes' ? "text-indigo-600 bg-indigo-50" : "text-gray-400 hover:bg-gray-50")}
-        >
+        <button onClick={() => setActiveTab('notes')} className={cn("flex flex-col items-center gap-1 p-2 rounded-xl transition-all w-24", activeTab === 'notes' ? "text-indigo-600 bg-indigo-50" : "text-gray-400 hover:bg-gray-50")}>
           <Folder size={24} strokeWidth={activeTab === 'notes' ? 2.5 : 2} />
           <span className="text-[10px] font-bold">知识库</span>
         </button>
@@ -133,14 +123,8 @@ function MistakeSystem() {
       {view === 'list' && (
         <div className="max-w-3xl mx-auto p-3 space-y-3">
            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <Search size={18} className="text-gray-400" />
-              </div>
-              <input 
-                type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="搜索错题、备注或日期..." 
-                className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm transition"
-              />
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Search size={18} className="text-gray-400" /></div>
+              <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="搜索错题、备注或日期..." className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm transition"/>
             </div>
             <MistakeList mistakes={filteredMistakes} onAdd={() => setView('add')} onOpen={(id) => { setCurrentMistakeId(id); setView('detail'); }} />
             <div className="text-center py-4 text-gray-400 text-xs font-mono opacity-60">Build: {APP_VERSION}</div>
@@ -201,8 +185,7 @@ function NoteSystem() {
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }), useSensor(KeyboardSensor));
   
-// --- [新增] 循环引用检测辅助函数 ---
-  // 检查 targetId (目标位置) 是否是 sourceId (被拖拽物体) 的后代
+  // 检查循环引用：判断 targetId 是否是 sourceId 的子孙
   const isDescendant = (sourceId, targetId) => {
     if (sourceId === targetId) return true;
     let current = allNotes.find(n => n.id === targetId);
@@ -213,38 +196,26 @@ function NoteSystem() {
     return false;
   };
 
-  // --- [修复版] 拖拽结束逻辑 ---
   const handleDragEnd = async (event) => {
     const { active, over } = event;
-    
-    // 1. 如果没有拖到有效区域，直接取消
-    if (!over) return;
-    if (active.id === over.id) return;
+    if (!over || active.id === over.id) return;
 
     const activeNode = allNotes.find(n => n.id === active.id);
     const overNode = allNotes.find(n => n.id === over.id);
 
     if (!activeNode || !overNode) return;
 
-    // 2. [关键修复] 循环嵌套检测
-    // 如果试图将 A 拖入 A 的子文件夹中，立即阻止
+    // [修复] 防止循环嵌套
     if (isDescendant(activeNode.id, overNode.id)) {
-      // 可以选择 alert 提示，或者直接忽略
-      // alert("无法将文件夹移动到其子目录中！");
       return; 
     }
 
-    // 3. 正常的拖拽逻辑
     if (overNode.type === 'folder' && activeNode.parentId !== overNode.id) {
-       // 情况 A: 拖入文件夹
        await db.notes.update(activeNode.id, { parentId: overNode.id });
     } else {
-       // 情况 B: 排序
        if (activeNode.parentId !== overNode.parentId) {
-         // 跨列表排序 (拖到了另一层级的缝隙中)
          await db.notes.update(activeNode.id, { parentId: overNode.parentId, order: overNode.order });
        } else {
-         // 同级排序
          const newOrder = overNode.order;
          const oldOrder = activeNode.order;
          await db.notes.update(activeNode.id, { order: newOrder });
@@ -265,16 +236,11 @@ function NoteSystem() {
       {/* 左侧目录栏 */}
       <div className={cn("w-64 bg-gray-50 border-r border-gray-200 flex flex-col transition-all duration-300 absolute md:relative z-20 h-full", !mobileMenuOpen && "-translate-x-full md:translate-x-0 md:w-64")}>
         <div className="p-3 border-b border-gray-200 flex gap-2">
-          <input 
-             value={searchTerm}
-             onChange={e => setSearchTerm(e.target.value)}
-             className="w-full text-xs bg-white border rounded px-2 py-1.5 focus:outline-blue-500"
-             placeholder="搜索标签或标题..."
-          />
+          <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full text-xs bg-white border rounded px-2 py-1.5 focus:outline-blue-500" placeholder="搜索标签或标题..." />
           <button onClick={() => setMobileMenuOpen(false)} className="md:hidden"><X size={16}/></button>
         </div>
         
-        <div className="flex-1 overflow-y-auto p-2">
+        <div className="flex-1 overflow-y-auto p-2 scrollbar-hide">
           {searchTerm ? (
             <div className="space-y-1">
               {filteredNotes.map(note => (
@@ -303,9 +269,7 @@ function NoteSystem() {
       {/* 右侧内容区 */}
       <div className="flex-1 h-full overflow-hidden flex flex-col relative bg-white">
         {!mobileMenuOpen && (
-          <button onClick={() => setMobileMenuOpen(true)} className="absolute top-4 left-4 z-10 p-2 bg-white shadow-md border rounded-full md:hidden">
-            <ChevronRightIcon size={20} />
-          </button>
+          <button onClick={() => setMobileMenuOpen(true)} className="absolute top-4 left-4 z-10 p-2 bg-white shadow-md border rounded-full md:hidden"><ChevronRightIcon size={20} /></button>
         )}
         
         {selectedNode ? (
@@ -332,7 +296,7 @@ function NoteSystem() {
 }
 
 // ==========================================
-// 组件库：笔记系统组件
+// 组件库
 // ==========================================
 
 function NoteTree({ nodes, selectedId, onSelect, onCreate, level = 0 }) {
@@ -349,7 +313,6 @@ function TreeNode({ node, selectedId, onSelect, onCreate, level }) {
   const [expanded, setExpanded] = useState(false);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: node.id });
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1, paddingLeft: `${level * 12 + 8}px` };
-  
   const isFolder = node.type === 'folder';
   const isSelected = selectedId === node.id;
 
@@ -384,111 +347,95 @@ function TreeNode({ node, selectedId, onSelect, onCreate, level }) {
   );
 }
 
-// --- [更新] 文件夹资源管理器视图 (集成移动功能) ---
-function FolderView({ folder, contents, onNavigate, onCreate, onBack }) {
-  const [editingTitle, setEditingTitle] = useState(false);
-  const [title, setTitle] = useState(folder.title);
-  
-  // [新增] 移动弹窗状态
-  const [moveTargetNode, setMoveTargetNode] = useState(null); 
-  const allNotes = useLiveQuery(() => db.notes.toArray()) || []; // 获取全部数据用于移动列表
-
-  useEffect(() => { setTitle(folder.title); }, [folder.id, folder.title]);
-
-  const handleRename = async () => {
-    if (title.trim() && title !== folder.title) {
-      await db.notes.update(folder.id, { title: title.trim() });
+function MoveModal({ node, allNotes, onClose, onConfirm }) {
+  const isDescendant = (sourceId, targetNode) => {
+    let curr = targetNode;
+    while(curr && curr.parentId !== 'root') {
+        if(curr.parentId === sourceId) return true;
+        curr = allNotes.find(n => n.id === curr.parentId);
     }
-    setEditingTitle(false);
+    return false;
   };
 
-  const handleDelete = async () => {
-    if (confirm(`确定要删除文件夹 "${folder.title}" 吗？\n里面的所有内容都将被永久删除！`)) {
-      await deleteNoteRecursive(folder.id);
-      onBack();
-    }
-  };
+  const validTargets = allNotes
+    .filter(n => n.type === 'folder' && n.id !== node.id && !isDescendant(node.id, n) && n.id !== node.parentId)
+    .sort((a, b) => (a.order || 0) - (b.order || 0));
 
-  // [新增] 处理移动确认
-  const handleMoveConfirm = async (targetId) => {
-      if (moveTargetNode) {
-          await db.notes.update(moveTargetNode.id, { parentId: targetId });
-          setMoveTargetNode(null); // 关闭弹窗
-      }
+  const renderOptions = (parentId = 'root', level = 0) => {
+      const children = validTargets.filter(n => n.parentId === parentId);
+      if (children.length === 0) return null;
+      return children.map(folder => (
+          <React.Fragment key={folder.id}>
+              <div onClick={() => onConfirm(folder.id)} className="p-3 hover:bg-blue-50 cursor-pointer flex items-center gap-2 border-b border-gray-50 text-sm text-gray-700" style={{ paddingLeft: `${level * 20 + 12}px` }}>
+                  <Folder size={16} className="text-blue-500 fill-blue-100"/>{folder.title}
+              </div>
+              {renderOptions(folder.id, level + 1)}
+          </React.Fragment>
+      ));
   };
 
   return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm flex flex-col max-h-[80vh]">
+            <div className="p-4 border-b border-gray-100 flex justify-between items-center"><h3 className="font-bold text-gray-800">移动 "{node.title}" 到...</h3><button onClick={onClose}><X size={20} className="text-gray-400"/></button></div>
+            <div className="flex-1 overflow-y-auto">
+                {node.parentId !== 'root' && (<div onClick={() => onConfirm('root')} className="p-3 hover:bg-blue-50 cursor-pointer flex items-center gap-2 border-b border-gray-50 text-sm font-bold text-gray-800 bg-gray-50"><Folder size={16} className="text-gray-500"/>根目录 (Root)</div>)}
+                {renderOptions('root', 0)}
+                {validTargets.length === 0 && node.parentId === 'root' && <div className="p-8 text-center text-gray-400 text-xs">没有其他可移动的目标文件夹</div>}
+            </div>
+        </div>
+    </div>
+  );
+}
+
+function FolderView({ folder, contents, onNavigate, onCreate, onBack }) {
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [title, setTitle] = useState(folder.title);
+  const [moveTargetNode, setMoveTargetNode] = useState(null); 
+  const allNotes = useLiveQuery(() => db.notes.toArray()) || [];
+
+  useEffect(() => { setTitle(folder.title); }, [folder.id, folder.title]);
+
+  const handleRename = async () => { if (title.trim() && title !== folder.title) { await db.notes.update(folder.id, { title: title.trim() }); } setEditingTitle(false); };
+  const handleDelete = async () => { if (confirm(`确定要删除文件夹 "${folder.title}" 吗？\n里面的所有内容都将被永久删除！`)) { await deleteNoteRecursive(folder.id); onBack(); } };
+  const handleMoveConfirm = async (targetId) => { if (moveTargetNode) { await db.notes.update(moveTargetNode.id, { parentId: targetId }); setMoveTargetNode(null); } };
+
+  return (
     <div className="flex flex-col h-full bg-white">
-      {/* 文件夹头部 (保持不变) */}
       <div className="p-4 border-b border-gray-100 flex items-center gap-3 sticky top-0 bg-white/95 backdrop-blur z-10">
-        {folder.parentId !== 'root' && (
-           <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500" title="返回上一级"><ArrowUpLeft size={20}/></button>
-        )}
+        {folder.parentId !== 'root' && (<button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500" title="返回上一级"><ArrowUpLeft size={20}/></button>)}
         <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Folder size={24}/></div>
         <div className="flex-1 mr-4">
-           {editingTitle ? (
-             <input autoFocus value={title} onChange={e => setTitle(e.target.value)} onBlur={handleRename} onKeyDown={e => e.key === 'Enter' && handleRename()} className="text-xl font-bold w-full border-b border-blue-500 outline-none bg-transparent text-gray-800"/>
-           ) : (
-             <h2 onClick={() => setEditingTitle(true)} className="text-xl font-bold text-gray-800 cursor-pointer hover:bg-gray-50 rounded px-2 -ml-2 truncate border border-transparent hover:border-gray-200 transition-all" title="点击重命名">{folder.title}</h2>
-           )}
+           {editingTitle ? (<input autoFocus value={title} onChange={e => setTitle(e.target.value)} onBlur={handleRename} onKeyDown={e => e.key === 'Enter' && handleRename()} className="text-xl font-bold w-full border-b border-blue-500 outline-none bg-transparent text-gray-800"/>) : (<h2 onClick={() => setEditingTitle(true)} className="text-xl font-bold text-gray-800 cursor-pointer hover:bg-gray-50 rounded px-2 -ml-2 truncate border border-transparent hover:border-gray-200 transition-all" title="点击重命名">{folder.title}</h2>)}
            <p className="text-xs text-gray-400 mt-0.5 ml-0.5">{contents.length} 个项目</p>
         </div>
         <div className="flex items-center gap-2">
-            <div className="flex bg-gray-100 rounded-lg p-1 mr-2">
-                <button onClick={() => onCreate('folder', folder.id)} className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold hover:bg-white hover:shadow-sm rounded-md text-gray-600 transition-all"><Plus size={14}/> 文件夹</button>
-                <div className="w-[1px] bg-gray-300 my-1 mx-1"></div>
-                <button onClick={() => onCreate('file', folder.id)} className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold hover:bg-white hover:shadow-sm rounded-md text-blue-600 transition-all"><Plus size={14}/> 知识点</button>
-            </div>
+            <div className="flex bg-gray-100 rounded-lg p-1 mr-2"><button onClick={() => onCreate('folder', folder.id)} className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold hover:bg-white hover:shadow-sm rounded-md text-gray-600 transition-all"><Plus size={14}/> 文件夹</button><div className="w-[1px] bg-gray-300 my-1 mx-1"></div><button onClick={() => onCreate('file', folder.id)} className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold hover:bg-white hover:shadow-sm rounded-md text-blue-600 transition-all"><Plus size={14}/> 知识点</button></div>
             <button onClick={handleDelete} className="p-2 text-red-400 hover:bg-red-50 hover:text-red-600 rounded-full transition-colors" title="删除文件夹"><Trash2 size={20}/></button>
         </div>
       </div>
-
-      {/* 内容网格 */}
       <div className="flex-1 overflow-y-auto p-4">
         {contents.length === 0 ? (
-           <div className="h-full flex flex-col items-center justify-center text-gray-300">
-              <div className="w-16 h-16 border-2 border-dashed border-gray-200 rounded-xl flex items-center justify-center mb-2"><Folder size={24} className="opacity-20"/></div>
-              <p className="text-sm">此文件夹为空</p>
-           </div>
+           <div className="h-full flex flex-col items-center justify-center text-gray-300"><div className="w-16 h-16 border-2 border-dashed border-gray-200 rounded-xl flex items-center justify-center mb-2"><Folder size={24} className="opacity-20"/></div><p className="text-sm">此文件夹为空</p></div>
         ) : (
            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
               {contents.map(item => (
                  <div key={item.id} className="group p-4 rounded-xl hover:bg-blue-50 border border-transparent hover:border-blue-100 cursor-pointer transition-all flex flex-col items-center gap-3 text-center active:scale-95 relative">
-                    {/* 点击进入 */}
                     <div className="absolute inset-0 z-0" onClick={() => onNavigate(item.id)}></div>
-                    
                     <div className={cn("w-16 h-16 flex items-center justify-center rounded-2xl shadow-sm transition-transform group-hover:-translate-y-1 z-10", item.type === 'folder' ? "bg-blue-100 text-blue-500" : "bg-white border border-gray-200 text-gray-400")}>
                        {item.type === 'folder' ? <Folder size={32} fill="currentColor" className="opacity-80"/> : <FileText size={32} />}
                     </div>
-                    
                     <div className="w-full z-10">
                        <div className="font-medium text-gray-700 text-sm truncate group-hover:text-blue-700">{item.title}</div>
                        <div className="text-[10px] text-gray-400 mt-1">{new Date(item.createdAt).toLocaleDateString()}</div>
                     </div>
-
-                    {/* [新增] 移动按钮 (悬浮显示) */}
-                    <button 
-                        onClick={(e) => { e.stopPropagation(); setMoveTargetNode(item); }}
-                        className="absolute top-2 right-2 p-1.5 bg-white shadow-md rounded-full text-gray-500 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity z-20"
-                        title="移动到..."
-                    >
-                        <ArrowRightSquare size={14}/>
-                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); setMoveTargetNode(item); }} className="absolute top-2 right-2 p-1.5 bg-white shadow-md rounded-full text-gray-500 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity z-20" title="移动到..."><ArrowRightSquare size={14}/></button>
                  </div>
               ))}
            </div>
         )}
       </div>
-
-      {/* [新增] 移动弹窗渲染 */}
-      {moveTargetNode && (
-          <MoveModal 
-             node={moveTargetNode} 
-             allNotes={allNotes} 
-             onClose={() => setMoveTargetNode(null)} 
-             onConfirm={handleMoveConfirm}
-          />
-      )}
+      {moveTargetNode && (<MoveModal node={moveTargetNode} allNotes={allNotes} onClose={() => setMoveTargetNode(null)} onConfirm={handleMoveConfirm}/>)}
     </div>
   );
 }
@@ -556,10 +503,7 @@ function NoteEditor({ nodeId, onBack }) {
   );
 }
 
-// ==========================================
-// 组件库：错题本系统组件
-// ==========================================
-
+// 错题本复用组件... (已包含在上方 MistakeSystem 模块中)
 function MistakeList({ mistakes, onAdd, onOpen }) {
   if (!mistakes) return <div className="text-center mt-20 text-gray-400">加载数据中...</div>;
   if (mistakes.length === 0) return <div className="flex flex-col items-center justify-center mt-10 text-gray-400 p-4"><div className="mb-4 p-4 bg-gray-200 rounded-full">📝</div><p className="mb-6 font-medium">没有找到相关错题</p><button onClick={onAdd} className="bg-blue-600 text-white px-6 py-2 rounded-full font-bold shadow-lg hover:bg-blue-700 transition text-sm">添加错题</button></div>;
@@ -630,8 +574,6 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onBack }) {
   useEffect(() => { setShowAnalysis(false); }, [mistake.id]);
   const handleDelete = async () => { if(confirm('删除后无法恢复，确定吗？')) { await db.mistakes.delete(mistake.id); onDelete(); } }
 
-  
-
   return (
     <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl pb-24 overflow-hidden relative">
       <div className="p-4 border-b border-gray-100 flex justify-between items-start bg-white sticky top-0 z-10">
@@ -661,74 +603,6 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onBack }) {
           <div className="h-20"></div>
         </div>
       </div>
-    </div>
-  );
-}
-
-// --- [新增] 高效移动弹窗组件 ---
-function MoveModal({ node, allNotes, onClose, onConfirm }) {
-  // 1. 筛选出所有合法的目标文件夹
-  // 不能移动到：自己、自己的子孙文件夹、当前所在的父文件夹
-  const isDescendant = (sourceId, targetNode) => {
-    let curr = targetNode;
-    while(curr && curr.parentId !== 'root') {
-        if(curr.parentId === sourceId) return true;
-        curr = allNotes.find(n => n.id === curr.parentId);
-    }
-    return false;
-  };
-
-  const validTargets = allNotes
-    .filter(n => n.type === 'folder') // 只能移动到文件夹
-    .filter(n => n.id !== node.id)    // 不能移动到自己
-    .filter(n => !isDescendant(node.id, n)) // 不能移动到自己的子孙
-    .filter(n => n.id !== node.parentId) // 排除当前所在的父文件夹
-    .sort((a, b) => (a.order || 0) - (b.order || 0));
-
-  // 构建缩进显示的选项
-  const renderOptions = (parentId = 'root', level = 0) => {
-      const children = validTargets.filter(n => n.parentId === parentId);
-      if (children.length === 0) return null;
-      return children.map(folder => (
-          <React.Fragment key={folder.id}>
-              <div 
-                  onClick={() => onConfirm(folder.id)}
-                  className="p-3 hover:bg-blue-50 cursor-pointer flex items-center gap-2 border-b border-gray-50 text-sm text-gray-700"
-                  style={{ paddingLeft: `${level * 20 + 12}px` }}
-              >
-                  <Folder size={16} className="text-blue-500 fill-blue-100"/>
-                  {folder.title}
-              </div>
-              {renderOptions(folder.id, level + 1)}
-          </React.Fragment>
-      ));
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm flex flex-col max-h-[80vh]">
-            <div className="p-4 border-b border-gray-100 flex justify-between items-center">
-                <h3 className="font-bold text-gray-800">移动 "{node.title}" 到...</h3>
-                <button onClick={onClose}><X size={20} className="text-gray-400"/></button>
-            </div>
-            
-            <div className="flex-1 overflow-y-auto">
-                {/* 根目录选项 */}
-                {node.parentId !== 'root' && (
-                    <div onClick={() => onConfirm('root')} className="p-3 hover:bg-blue-50 cursor-pointer flex items-center gap-2 border-b border-gray-50 text-sm font-bold text-gray-800 bg-gray-50">
-                        <Folder size={16} className="text-gray-500"/>
-                        根目录 (Root)
-                    </div>
-                )}
-                
-                {/* 文件夹树 */}
-                {renderOptions('root', 0)}
-                
-                {validTargets.length === 0 && node.parentId === 'root' && (
-                    <div className="p-8 text-center text-gray-400 text-xs">没有其他可移动的目标文件夹</div>
-                )}
-            </div>
-        </div>
     </div>
   );
 }
