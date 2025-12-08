@@ -273,6 +273,20 @@ function NoteSystem() {
         </div>
       </div>
 
+     // [新增] 获取当前选中的节点对象
+  const selectedNode = useMemo(() => allNotes.find(n => n.id === selectedNodeId), [allNotes, selectedNodeId]);
+  
+  // [新增] 如果选中了文件夹，获取其下的子内容
+  const folderContents = useMemo(() => {
+     if (!selectedNode || selectedNode.type !== 'folder') return [];
+     return allNotes.filter(n => n.parentId === selectedNode.id).sort((a, b) => (a.order || 0) - (b.order || 0));
+  }, [allNotes, selectedNode]);
+
+  return (
+    <div className="flex h-full bg-white">
+      {/* 左侧目录栏代码保持不变... */}
+      {/* ... */}
+
       {/* 右侧内容区 */}
       <div className="flex-1 h-full overflow-hidden flex flex-col relative bg-white">
         {!mobileMenuOpen && (
@@ -281,12 +295,22 @@ function NoteSystem() {
           </button>
         )}
         
-        {selectedNodeId ? (
-          <NoteEditor nodeId={selectedNodeId} onBack={() => setMobileMenuOpen(true)} />
+        {/* 根据选中类型渲染不同视图 */}
+        {selectedNode ? (
+          selectedNode.type === 'folder' ? (
+            <FolderView 
+              folder={selectedNode} 
+              contents={folderContents} 
+              onNavigate={setSelectedNodeId} 
+              onCreate={handleCreate}
+            />
+          ) : (
+            <NoteEditor nodeId={selectedNodeId} onBack={() => setMobileMenuOpen(true)} />
+          )
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-gray-300 select-none">
             <Folder size={64} className="mb-4 opacity-20"/>
-            <p>选择或创建一个知识点</p>
+            <p>选择文件夹或知识点</p>
           </div>
         )}
       </div>
@@ -405,6 +429,77 @@ function TreeNode({ node, selectedId, onSelect, onCreate, level }) {
             <NoteTree nodes={node.children} selectedId={selectedId} onSelect={onSelect} onCreate={onCreate} level={level + 1} />
         </div>
       )}
+    </div>
+  );
+}
+
+      // --- 文件夹资源管理器视图 ---
+function FolderView({ folder, contents, onNavigate, onCreate }) {
+  return (
+    <div className="flex flex-col h-full bg-white">
+      {/* 文件夹头部 */}
+      <div className="p-4 border-b border-gray-100 flex items-center gap-3 sticky top-0 bg-white/95 backdrop-blur z-10">
+        <div className="p-2 bg-blue-50 text-blue-600 rounded-lg">
+           <Folder size={24}/>
+        </div>
+        <div className="flex-1">
+           <h2 className="text-xl font-bold text-gray-800">{folder.title}</h2>
+           <p className="text-xs text-gray-400">{contents.length} 个项目</p>
+        </div>
+        {/* 快速新建按钮 */}
+        <div className="flex gap-2">
+            <button onClick={() => onCreate('folder', folder.id)} className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold bg-gray-100 hover:bg-gray-200 rounded text-gray-600">
+                <Plus size={14}/> 文件夹
+            </button>
+            <button onClick={() => onCreate('file', folder.id)} className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold bg-blue-600 hover:bg-blue-700 rounded text-white">
+                <Plus size={14}/> 知识点
+            </button>
+        </div>
+      </div>
+
+      {/* 内容网格 */}
+      <div className="flex-1 overflow-y-auto p-4">
+        {contents.length === 0 ? (
+           <div className="h-full flex flex-col items-center justify-center text-gray-300">
+              <div className="w-16 h-16 border-2 border-dashed border-gray-200 rounded-xl flex items-center justify-center mb-2">
+                 <Folder size={24} className="opacity-20"/>
+              </div>
+              <p className="text-sm">此文件夹为空</p>
+           </div>
+        ) : (
+           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+              {contents.map(item => (
+                 <div 
+                   key={item.id}
+                   onClick={() => onNavigate(item.id)}
+                   className="group p-4 rounded-xl hover:bg-blue-50 border border-transparent hover:border-blue-100 cursor-pointer transition-all flex flex-col items-center gap-3 text-center active:scale-95"
+                 >
+                    {/* 图标 */}
+                    <div className={cn(
+                        "w-16 h-16 flex items-center justify-center rounded-2xl shadow-sm transition-transform group-hover:-translate-y-1",
+                        item.type === 'folder' ? "bg-blue-100 text-blue-500" : "bg-white border border-gray-200 text-gray-400"
+                    )}>
+                       {item.type === 'folder' ? (
+                          <Folder size={32} fill="currentColor" className="opacity-80"/>
+                       ) : (
+                          <FileText size={32} />
+                       )}
+                    </div>
+                    
+                    {/* 标题 */}
+                    <div className="w-full">
+                       <div className="font-medium text-gray-700 text-sm truncate group-hover:text-blue-700">
+                          {item.title}
+                       </div>
+                       <div className="text-[10px] text-gray-400 mt-1">
+                          {new Date(item.createdAt).toLocaleDateString()}
+                       </div>
+                    </div>
+                 </div>
+              ))}
+           </div>
+        )}
+      </div>
     </div>
   );
 }
