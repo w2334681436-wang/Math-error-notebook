@@ -484,66 +484,89 @@ function MoveModal({ node, allNotes, onClose, onConfirm }) {
   );
 }
 
-// --- [重构版] 文件夹视图：支持网格拖拽排序、多维排序设置 ---
+// --- [修复版] 文件夹视图：完美解决拖拽/菜单冲突 ---
 function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, onCut, onPaste, clipboardCount }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState(folder.title);
   const [renamingId, setRenamingId] = useState(null);
   
-  // 状态管理
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [contextMenu, setContextMenu] = useState(null);
   const [moveTargetModal, setMoveTargetModal] = useState(false);
-  const [showSortMenu, setShowSortMenu] = useState(false); // 排序菜单开关
-
-  // [新增] 排序配置
+  const [showSortMenu, setShowSortMenu] = useState(false);
   const [sortConfig, setSortConfig] = useState({ key: 'order', label: '自定义' }); 
 
   const allNotes = useLiveQuery(() => db.notes.toArray()) || [];
+  const longPressTimer = React.useRef(null); // 长按计时器引用
 
   useEffect(() => { setTitle(folder.title); setSelectedIds(new Set()); setIsSelectionMode(false); setRenamingId(null); }, [folder.id]);
 
-  // --- 排序逻辑 ---
+  // --- 排序与拖拽 ---
   const sortedContents = useMemo(() => {
     let sorted = [...contents];
-    if (sortConfig.key === 'title') {
-        sorted.sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'));
-    } else if (sortConfig.key === 'date') {
-        sorted.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)); // 最新在前
-    } else {
-        // 默认按 order 排序 (数据库取出来时已经是排好的，或者再次确保)
-        sorted.sort((a, b) => (a.order || 0) - (b.order || 0));
-    }
+    if (sortConfig.key === 'title') sorted.sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'));
+    else if (sortConfig.key === 'date') sorted.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    else sorted.sort((a, b) => (a.order || 0) - (b.order || 0));
     return sorted;
   }, [contents, sortConfig]);
 
-  // --- 拖拽传感器设置 ---
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { delay: 200, tolerance: 5 } }), // [关键] 长按200ms激活拖拽
+    useSensor(PointerSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
-  // --- 拖拽结束：更新顺序 ---
   const handleDragEnd = (event) => {
+    clearTimer(); // 拖拽结束也确保清除计时器
     const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    
-    // 只有在自定义排序模式下才允许修改顺序
-    if (sortConfig.key !== 'order') return;
-
+    if (!over || active.id === over.id || sortConfig.key !== 'order') return;
     const oldIndex = sortedContents.findIndex(c => c.id === active.id);
     const newIndex = sortedContents.findIndex(c => c.id === over.id);
-    
-    // 1. 在内存中移动数组
     const newOrderArray = arrayMove(sortedContents, oldIndex, newIndex);
-    
-    // 2. 更新数据库中的 order 字段 (简单策略：重写当前列表所有 order)
     newOrderArray.forEach((item, index) => {
-        if (item.order !== index) { // 只更新变化的
-           db.notes.update(item.id, { order: index });
-        }
+        if (item.order !== index) db.notes.update(item.id, { order: index });
     });
+  };
+
+  // --- 关键交互修复逻辑 ---
+  
+  // 1. 清除计时器的统一函数
+  const clearTimer = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  // 2. 长按触发器
+  const startLongPress = (targetType, id, e) => {
+    if (isSelectionMode) return;
+    clearTimer(); // 先清除旧的
+    
+    // 记录点击坐标
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+    longPressTimer.current = setTimeout(() => {
+      // 600ms 后触发菜单
+      setContextMenu({ x: clientX, y: clientY, targetId: id });
+    }, 600);
+  };
+
+  // 3. 容器级别的事件监听 (处理空白处)
+  const handleContainerPointerDown = (e) => {
+    // 如果点的是背景 (通过 data-type 判断)
+    if (e.target.dataset.type === 'folder-bg') {
+       startLongPress('bg', 'folder_bg', e);
+    }
+  };
+
+  // 4. Item 级别的事件监听
+  const handleItemPointerDown = (id, e) => {
+    // 只有左键或触摸才触发长按
+    if (e.button === 0 || e.pointerType === 'touch') {
+       startLongPress('item', id, e);
+    }
   };
 
   // --- 其他原有逻辑 ---
@@ -555,25 +578,25 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
   const handleBulkMoveConfirm = async (targetId) => { for (const id of selectedIds) { if (id !== targetId) await db.notes.update(id, { parentId: targetId }); } setMoveTargetModal(false); setSelectedIds(new Set()); setIsSelectionMode(false); };
 
   const handleContextMenu = (id, e) => { e.preventDefault(); e.stopPropagation(); if (isSelectionMode) return; setContextMenu({ x: e.clientX, y: e.clientY, targetId: id }); };
-  const handleContainerContextMenu = (e) => { e.preventDefault(); const x = e.touches ? e.touches[0].clientX : e.clientX; const y = e.touches ? e.touches[0].clientY : e.clientY; setContextMenu({ x, y, targetId: 'folder_bg' }); };
+  const handleContainerContextMenu = (e) => { e.preventDefault(); if(e.target.dataset.type === 'folder-bg') setContextMenu({ x: e.clientX, y: e.clientY, targetId: 'folder_bg' }); };
   const toggleSelection = (id) => { const newSet = new Set(selectedIds); if (newSet.has(id)) newSet.delete(id); else newSet.add(id); setSelectedIds(newSet); };
   const onItemClick = (id) => { if (isSelectionMode) { toggleSelection(id); } else { onNavigate(id); } };
 
   const handleMenuAction = (action) => {
     const targetId = contextMenu?.targetId;
     if (!targetId) return;
-    if (action === 'rename') { setRenamingId(targetId); } 
-    else if (action === 'copy') { onCopy([targetId]); } 
-    else if (action === 'cut') { onCut([targetId]); } 
-    else if (action === 'delete') { if (confirm("删除此项？")) deleteNoteRecursive(targetId); } 
-    else if (action === 'select') { setIsSelectionMode(true); setSelectedIds(new Set([targetId])); } 
-    else if (action === 'paste') { onPaste(); }
+    if (action === 'rename') { setRenamingId(targetId); } else if (action === 'copy') { onCopy([targetId]); } else if (action === 'cut') { onCut([targetId]); } else if (action === 'delete') { if (confirm("删除此项？")) deleteNoteRecursive(targetId); } else if (action === 'select') { setIsSelectionMode(true); setSelectedIds(new Set([targetId])); } else if (action === 'paste') { onPaste(); }
     setContextMenu(null);
   };
 
   return (
-    <div className="flex flex-col h-full bg-white relative" onContextMenu={handleContainerContextMenu}>
-      {/* 头部 */}
+    <div 
+        className="flex flex-col h-full bg-white relative" 
+        onContextMenu={handleContainerContextMenu}
+        // [修复] 只要鼠标/手指抬起或离开，就取消长按
+        onPointerUp={clearTimer}
+        onPointerLeave={clearTimer}
+    >
       <div className="p-4 border-b border-gray-100 flex items-center gap-3 sticky top-0 bg-white/95 backdrop-blur z-10">
         {folder.parentId !== 'root' && (<button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500"><ArrowUpLeft size={20}/></button>)}
         <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Folder size={24}/></div>
@@ -581,58 +604,47 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
            {editingTitle ? (<input autoFocus value={title} onChange={e => setTitle(e.target.value)} onBlur={handleRename} onKeyDown={e => e.key === 'Enter' && handleRename()} className="text-xl font-bold w-full border-b border-blue-500 outline-none"/>) : (<h2 onClick={() => setEditingTitle(true)} className="text-xl font-bold text-gray-800 truncate" title="点击重命名">{folder.title}</h2>)}
            <p className="text-xs text-gray-400 mt-0.5">{contents.length} 个项目</p>
         </div>
-        
-        {/* [新增] 排序按钮 */}
         <div className="relative">
-            <button onClick={() => setShowSortMenu(!showSortMenu)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600 flex items-center gap-1">
-                <ArrowDownUp size={18}/>
-            </button>
+            <button onClick={() => setShowSortMenu(!showSortMenu)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600 flex items-center gap-1"><ArrowDownUp size={18}/></button>
             {showSortMenu && (
                 <>
                 <div className="fixed inset-0 z-40" onClick={() => setShowSortMenu(false)}></div>
                 <div className="absolute top-full right-0 mt-2 bg-white shadow-xl border border-gray-100 rounded-lg py-1 w-32 z-50">
                     <button onClick={() => { setSortConfig({key:'order', label:'自定义'}); setShowSortMenu(false); }} className={cn("w-full text-left px-4 py-2 text-sm hover:bg-gray-50", sortConfig.key==='order' && "text-blue-600 bg-blue-50")}>自定义顺序</button>
-                    <button onClick={() => { setSortConfig({key:'title', label:'名称'}); setShowSortMenu(false); }} className={cn("w-full text-left px-4 py-2 text-sm hover:bg-gray-50", sortConfig.key==='title' && "text-blue-600 bg-blue-50")}>按名称 (A-Z)</button>
-                    <button onClick={() => { setSortConfig({key:'date', label:'时间'}); setShowSortMenu(false); }} className={cn("w-full text-left px-4 py-2 text-sm hover:bg-gray-50", sortConfig.key==='date' && "text-blue-600 bg-blue-50")}>按时间 (最新)</button>
+                    <button onClick={() => { setSortConfig({key:'title', label:'名称'}); setShowSortMenu(false); }} className={cn("w-full text-left px-4 py-2 text-sm hover:bg-gray-50", sortConfig.key==='title' && "text-blue-600 bg-blue-50")}>按名称</button>
+                    <button onClick={() => { setSortConfig({key:'date', label:'时间'}); setShowSortMenu(false); }} className={cn("w-full text-left px-4 py-2 text-sm hover:bg-gray-50", sortConfig.key==='date' && "text-blue-600 bg-blue-50")}>按时间</button>
                 </div>
                 </>
             )}
         </div>
-
         <button onClick={() => { setIsSelectionMode(!isSelectionMode); setSelectedIds(new Set()); }} className={cn("p-2 rounded-full font-bold text-xs flex items-center gap-1 transition", isSelectionMode ? "bg-blue-100 text-blue-600" : "hover:bg-gray-100 text-gray-600")}>{isSelectionMode ? '完成' : <><CheckSquare size={18}/> 编辑</>}</button>
       </div>
 
-      {/* 内容网格 - [新增] DndContext 包裹 */}
-      <div className="flex-1 overflow-y-auto p-4" onClick={() => setContextMenu(null)}>
-        {sortedContents.length === 0 ? (
-           <div className="h-full flex flex-col items-center justify-center text-gray-300"><div className="w-16 h-16 border-2 border-dashed border-gray-200 rounded-xl flex items-center justify-center mb-2"><Folder size={24} className="opacity-20"/></div><p className="text-sm">长按空白处粘贴</p></div>
+      <div 
+        className="flex-1 overflow-y-auto p-4" 
+        onClick={() => setContextMenu(null)}
+        // [修复] 背景长按检测：使用 data-type
+        data-type="folder-bg"
+        onPointerDown={handleContainerPointerDown}
+        onPointerMove={clearTimer} // [关键] 一旦移动，立即取消长按计时器！防止拖拽时弹出菜单
+      >
+        {contents.length === 0 ? (
+           <div className="h-full flex flex-col items-center justify-center text-gray-300 pointer-events-none"><div className="w-16 h-16 border-2 border-dashed border-gray-200 rounded-xl flex items-center justify-center mb-2"><Folder size={24} className="opacity-20"/></div><p className="text-sm">长按空白处粘贴</p></div>
         ) : (
-           <DndContext 
-              sensors={sensors} 
-              collisionDetection={closestCenter} 
-              onDragEnd={handleDragEnd}
-           >
+           <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragStart={clearTimer} onDragEnd={handleDragEnd}>
              <SortableContext items={sortedContents.map(n => n.id)} strategy={rectSortingStrategy}>
-               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 pb-20">
+               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 pb-20" data-type="folder-bg">
                   {sortedContents.map(item => (
                      <SortableGridItem 
-                        key={item.id} 
-                        item={item} 
-                        isSelectionMode={isSelectionMode} 
-                        isSelected={selectedIds.has(item.id)}
-                        onClick={(e) => { 
-                            if(!isSelectionMode && sortConfig.key !== 'order') e.stopPropagation(); // 阻止拖拽时的误触
-                            onItemClick(item.id); 
-                        }}
+                        key={item.id} item={item} isSelectionMode={isSelectionMode} isSelected={selectedIds.has(item.id)}
+                        onClick={(e) => { if(!isSelectionMode && sortConfig.key !== 'order') e.stopPropagation(); onItemClick(item.id); }}
                         onContextMenu={(e) => handleContextMenu(item.id, e)}
+                        // [修复] 传递按下和移动事件
+                        onPointerDown={(e) => handleItemPointerDown(item.id, e)}
+                        onPointerMove={clearTimer} // [关键] 只要移动手指，就认为是拖拽意图，取消菜单计时
                      >
-                        {/* 自定义选择圈 */}
                         {isSelectionMode && (<div className="absolute top-2 right-2 text-blue-500 z-50">{selectedIds.has(item.id) ? <CheckCircle2 size={20} fill="white"/> : <Circle size={20} className="text-gray-300"/>}</div>)}
-                        
-                        <div className={cn("w-16 h-16 flex items-center justify-center rounded-2xl shadow-sm transition-transform z-10", item.type === 'folder' ? "bg-blue-100 text-blue-500" : "bg-white border border-gray-200 text-gray-400")}>
-                           {item.type === 'folder' ? <Folder size={32} fill="currentColor" className="opacity-80"/> : <FileText size={32} />}
-                        </div>
-                        
+                        <div className={cn("w-16 h-16 flex items-center justify-center rounded-2xl shadow-sm transition-transform z-10", item.type === 'folder' ? "bg-blue-100 text-blue-500" : "bg-white border border-gray-200 text-gray-400")}>{item.type === 'folder' ? <Folder size={32} fill="currentColor" className="opacity-80"/> : <FileText size={32} />}</div>
                         <div className="w-full z-10">
                            {renamingId === item.id ? (
                                <input autoFocus defaultValue={item.title} onBlur={(e) => handleItemRenameConfirm(item.id, e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleItemRenameConfirm(item.id, e.currentTarget.value)} onClick={(e) => e.stopPropagation()} className="w-full text-center text-sm border-b border-blue-500 outline-none bg-transparent"/>
@@ -648,7 +660,6 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
         )}
       </div>
 
-      {/* 底部菜单 (保持不变) */}
       {isSelectionMode && (
         <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-3 flex justify-around items-center shadow-[0_-4px_20px_rgba(0,0,0,0.1)] z-20 animate-in slide-in-from-bottom duration-200">
            <button onClick={() => { onCopy(Array.from(selectedIds)); setIsSelectionMode(false); }} className="flex flex-col items-center gap-1 text-gray-600 hover:text-blue-600 disabled:opacity-30" disabled={selectedIds.size===0}><Copy size={20}/><span className="text-[10px]">复制</span></button>
@@ -665,7 +676,6 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
         </div>
       )}
 
-      {/* 右键菜单 (保持不变) */}
       {contextMenu && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setContextMenu(null)}></div>
@@ -995,8 +1005,8 @@ function MultiImageUpload({ images = [], onChange, max = 9 }) {
   );
 }
 
-// --- [新增] 可拖拽的网格项 ---
-function SortableGridItem({ item, isSelectionMode, isSelected, onClick, onContextMenu, onTouchStart, children }) {
+// --- [更新] 可拖拽项：透传指针事件以修复冲突 ---
+function SortableGridItem({ item, isSelectionMode, isSelected, onClick, onContextMenu, onPointerDown, onPointerMove, children }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
   
   const style = {
@@ -1014,9 +1024,11 @@ function SortableGridItem({ item, isSelectionMode, isSelected, onClick, onContex
       {...listeners}
       onClick={onClick}
       onContextMenu={onContextMenu}
-      // 保留原有触摸逻辑供外部使用，dnd-kit 会自动处理长按拖拽
+      // [关键] 透传这些事件给父组件，用于取消长按菜单
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove} 
       className={cn(
-        "group p-4 rounded-xl border cursor-pointer transition-all flex flex-col items-center gap-3 text-center relative select-none touch-manipulation",
+        "group p-4 rounded-xl border cursor-pointer transition-all flex flex-col items-center gap-3 text-center relative select-none touch-none", // touch-none 防止浏览器默认缩放干扰拖拽
         isSelectionMode && isSelected ? "bg-blue-50 border-blue-300 ring-2 ring-blue-200" : "hover:bg-gray-50 border-transparent hover:border-gray-200",
         isSelectionMode && !isSelected && "opacity-60 grayscale",
         isDragging && "shadow-2xl scale-105 bg-white ring-2 ring-blue-500 z-50"
