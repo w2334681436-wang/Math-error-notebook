@@ -6,10 +6,12 @@ import {
   Folder, FileText, ChevronDown, ChevronRight as ChevronRightIcon, GripVertical, Image as ImageIcon, Tag, 
   ArrowUpLeft, ArrowRightSquare, PanelLeftClose, PanelLeftOpen, 
   MoreVertical, CheckSquare, Copy, Scissors, Clipboard, CheckCircle2, Circle,
-  Home, ChevronLeft 
+  Home, ChevronLeft, ArrowDownUp, Calendar // [新增] 排序和日历图标
 } from 'lucide-react';
+
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay, useDndMonitor, pointerWithin } from '@dnd-kit/core';
-import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
+// [新增] 引入 rectSortingStrategy 用于网格排序
+import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable, rectSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -482,71 +484,78 @@ function MoveModal({ node, allNotes, onClose, onConfirm }) {
   );
 }
 
-// --- [修复版] 文件夹视图：修复长按空白处判定 ---
+// --- [重构版] 文件夹视图：支持网格拖拽排序、多维排序设置 ---
 function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, onCut, onPaste, clipboardCount }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState(folder.title);
   const [renamingId, setRenamingId] = useState(null);
+  
+  // 状态管理
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [contextMenu, setContextMenu] = useState(null);
   const [moveTargetModal, setMoveTargetModal] = useState(false);
-  
+  const [showSortMenu, setShowSortMenu] = useState(false); // 排序菜单开关
+
+  // [新增] 排序配置
+  const [sortConfig, setSortConfig] = useState({ key: 'order', label: '自定义' }); 
+
   const allNotes = useLiveQuery(() => db.notes.toArray()) || [];
 
   useEffect(() => { setTitle(folder.title); setSelectedIds(new Set()); setIsSelectionMode(false); setRenamingId(null); }, [folder.id]);
 
-  const handleRename = async () => { if (title.trim()) await db.notes.update(folder.id, { title: title.trim() }); setEditingTitle(false); };
-  
-  const handleCreateWrapper = async (type) => {
-      const newId = await onCreate(type, folder.id);
-      setRenamingId(newId);
-  };
-
-  const handleItemRenameConfirm = async (id, newName) => {
-      if (newName.trim()) { await db.notes.update(id, { title: newName.trim() }); }
-      setRenamingId(null);
-  };
-
-  const handleDeleteFolder = async () => { if (confirm('确定删除此文件夹及其内容吗？')) { await deleteNoteRecursive(folder.id); onBack(); } };
-
-  const handleBulkDelete = async () => {
-    if (confirm(`确定删除选中的 ${selectedIds.size} 项吗？`)) {
-      for (const id of selectedIds) await deleteNoteRecursive(id);
-      setSelectedIds(new Set());
-      setIsSelectionMode(false);
+  // --- 排序逻辑 ---
+  const sortedContents = useMemo(() => {
+    let sorted = [...contents];
+    if (sortConfig.key === 'title') {
+        sorted.sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'));
+    } else if (sortConfig.key === 'date') {
+        sorted.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)); // 最新在前
+    } else {
+        // 默认按 order 排序 (数据库取出来时已经是排好的，或者再次确保)
+        sorted.sort((a, b) => (a.order || 0) - (b.order || 0));
     }
+    return sorted;
+  }, [contents, sortConfig]);
+
+  // --- 拖拽传感器设置 ---
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { delay: 200, tolerance: 5 } }), // [关键] 长按200ms激活拖拽
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
+  // --- 拖拽结束：更新顺序 ---
+  const handleDragEnd = (event) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    
+    // 只有在自定义排序模式下才允许修改顺序
+    if (sortConfig.key !== 'order') return;
+
+    const oldIndex = sortedContents.findIndex(c => c.id === active.id);
+    const newIndex = sortedContents.findIndex(c => c.id === over.id);
+    
+    // 1. 在内存中移动数组
+    const newOrderArray = arrayMove(sortedContents, oldIndex, newIndex);
+    
+    // 2. 更新数据库中的 order 字段 (简单策略：重写当前列表所有 order)
+    newOrderArray.forEach((item, index) => {
+        if (item.order !== index) { // 只更新变化的
+           db.notes.update(item.id, { order: index });
+        }
+    });
   };
 
-  const handleBulkMoveConfirm = async (targetId) => {
-    for (const id of selectedIds) { if (id !== targetId) await db.notes.update(id, { parentId: targetId }); }
-    setMoveTargetModal(false); setSelectedIds(new Set()); setIsSelectionMode(false);
-  };
+  // --- 其他原有逻辑 ---
+  const handleRename = async () => { if (title.trim()) await db.notes.update(folder.id, { title: title.trim() }); setEditingTitle(false); };
+  const handleCreateWrapper = async (type) => { const newId = await onCreate(type, folder.id); setRenamingId(newId); };
+  const handleItemRenameConfirm = async (id, newName) => { if (newName.trim()) { await db.notes.update(id, { title: newName.trim() }); } setRenamingId(null); };
+  const handleDeleteFolder = async () => { if (confirm('确定删除此文件夹及其内容吗？')) { await deleteNoteRecursive(folder.id); onBack(); } };
+  const handleBulkDelete = async () => { if (confirm(`确定删除选中的 ${selectedIds.size} 项吗？`)) { for (const id of selectedIds) await deleteNoteRecursive(id); setSelectedIds(new Set()); setIsSelectionMode(false); } };
+  const handleBulkMoveConfirm = async (targetId) => { for (const id of selectedIds) { if (id !== targetId) await db.notes.update(id, { parentId: targetId }); } setMoveTargetModal(false); setSelectedIds(new Set()); setIsSelectionMode(false); };
 
-  const longPressTimer = React.useRef(null);
-  const handleTouchStart = (id, e) => {
-    if (isSelectionMode) return; 
-    longPressTimer.current = setTimeout(() => {
-      const touch = e.touches[0];
-      setContextMenu({ x: touch.clientX, y: touch.clientY, targetId: id });
-    }, 600); 
-  };
-  const handleTouchEnd = () => { if (longPressTimer.current) clearTimeout(longPressTimer.current); };
-  
-  const handleContextMenu = (id, e) => { 
-      e.preventDefault(); e.stopPropagation(); // 阻止冒泡，防止触发背景菜单
-      if (isSelectionMode) return; 
-      setContextMenu({ x: e.clientX, y: e.clientY, targetId: id }); 
-  };
-  
-  // [修复] 空白处右键/长按：不再检查 e.target，只要能冒泡到这里就是空白处
-  const handleContainerContextMenu = (e) => {
-      e.preventDefault();
-      const x = e.touches ? e.touches[0].clientX : e.clientX;
-      const y = e.touches ? e.touches[0].clientY : e.clientY;
-      setContextMenu({ x, y, targetId: 'folder_bg' });
-  };
-
+  const handleContextMenu = (id, e) => { e.preventDefault(); e.stopPropagation(); if (isSelectionMode) return; setContextMenu({ x: e.clientX, y: e.clientY, targetId: id }); };
+  const handleContainerContextMenu = (e) => { e.preventDefault(); const x = e.touches ? e.touches[0].clientX : e.clientX; const y = e.touches ? e.touches[0].clientY : e.clientY; setContextMenu({ x, y, targetId: 'folder_bg' }); };
   const toggleSelection = (id) => { const newSet = new Set(selectedIds); if (newSet.has(id)) newSet.delete(id); else newSet.add(id); setSelectedIds(newSet); };
   const onItemClick = (id) => { if (isSelectionMode) { toggleSelection(id); } else { onNavigate(id); } };
 
@@ -564,54 +573,82 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
 
   return (
     <div className="flex flex-col h-full bg-white relative" onContextMenu={handleContainerContextMenu}>
+      {/* 头部 */}
       <div className="p-4 border-b border-gray-100 flex items-center gap-3 sticky top-0 bg-white/95 backdrop-blur z-10">
         {folder.parentId !== 'root' && (<button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500"><ArrowUpLeft size={20}/></button>)}
         <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Folder size={24}/></div>
-        <div className="flex-1 mr-4 overflow-hidden">
+        <div className="flex-1 mr-2 overflow-hidden">
            {editingTitle ? (<input autoFocus value={title} onChange={e => setTitle(e.target.value)} onBlur={handleRename} onKeyDown={e => e.key === 'Enter' && handleRename()} className="text-xl font-bold w-full border-b border-blue-500 outline-none"/>) : (<h2 onClick={() => setEditingTitle(true)} className="text-xl font-bold text-gray-800 truncate" title="点击重命名">{folder.title}</h2>)}
            <p className="text-xs text-gray-400 mt-0.5">{contents.length} 个项目</p>
         </div>
+        
+        {/* [新增] 排序按钮 */}
+        <div className="relative">
+            <button onClick={() => setShowSortMenu(!showSortMenu)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600 flex items-center gap-1">
+                <ArrowDownUp size={18}/>
+            </button>
+            {showSortMenu && (
+                <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowSortMenu(false)}></div>
+                <div className="absolute top-full right-0 mt-2 bg-white shadow-xl border border-gray-100 rounded-lg py-1 w-32 z-50">
+                    <button onClick={() => { setSortConfig({key:'order', label:'自定义'}); setShowSortMenu(false); }} className={cn("w-full text-left px-4 py-2 text-sm hover:bg-gray-50", sortConfig.key==='order' && "text-blue-600 bg-blue-50")}>自定义顺序</button>
+                    <button onClick={() => { setSortConfig({key:'title', label:'名称'}); setShowSortMenu(false); }} className={cn("w-full text-left px-4 py-2 text-sm hover:bg-gray-50", sortConfig.key==='title' && "text-blue-600 bg-blue-50")}>按名称 (A-Z)</button>
+                    <button onClick={() => { setSortConfig({key:'date', label:'时间'}); setShowSortMenu(false); }} className={cn("w-full text-left px-4 py-2 text-sm hover:bg-gray-50", sortConfig.key==='date' && "text-blue-600 bg-blue-50")}>按时间 (最新)</button>
+                </div>
+                </>
+            )}
+        </div>
+
         <button onClick={() => { setIsSelectionMode(!isSelectionMode); setSelectedIds(new Set()); }} className={cn("p-2 rounded-full font-bold text-xs flex items-center gap-1 transition", isSelectionMode ? "bg-blue-100 text-blue-600" : "hover:bg-gray-100 text-gray-600")}>{isSelectionMode ? '完成' : <><CheckSquare size={18}/> 编辑</>}</button>
       </div>
 
-      <div 
-        className="flex-1 overflow-y-auto p-4" 
-        onClick={() => setContextMenu(null)} 
-        // [修复] 这里直接处理背景长按，不再加条件判断
-        onTouchStart={(e) => handleTouchStart('folder_bg', e)} 
-        onTouchEnd={handleTouchEnd}
-      >
-        {contents.length === 0 ? (
+      {/* 内容网格 - [新增] DndContext 包裹 */}
+      <div className="flex-1 overflow-y-auto p-4" onClick={() => setContextMenu(null)}>
+        {sortedContents.length === 0 ? (
            <div className="h-full flex flex-col items-center justify-center text-gray-300"><div className="w-16 h-16 border-2 border-dashed border-gray-200 rounded-xl flex items-center justify-center mb-2"><Folder size={24} className="opacity-20"/></div><p className="text-sm">长按空白处粘贴</p></div>
         ) : (
-           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 pb-20">
-              {contents.map(item => (
-                 <div 
-                   key={item.id}
-                   onClick={(e) => { e.stopPropagation(); onItemClick(item.id); }}
-                   // [修复] 增加 stopPropagation，确保点在文件上时，不会触发背景的长按逻辑
-                   onTouchStart={(e) => { e.stopPropagation(); handleTouchStart(item.id, e); }}
-                   onTouchEnd={handleTouchEnd}
-                   onContextMenu={(e) => handleContextMenu(item.id, e)}
-                   className={cn("group p-4 rounded-xl border cursor-pointer transition-all flex flex-col items-center gap-3 text-center relative select-none", isSelectionMode && selectedIds.has(item.id) ? "bg-blue-50 border-blue-300 ring-2 ring-blue-200" : "hover:bg-gray-50 border-transparent hover:border-gray-200", isSelectionMode && !selectedIds.has(item.id) && "opacity-60 grayscale")}
-                 >
-                    {isSelectionMode && (<div className="absolute top-2 right-2 text-blue-500">{selectedIds.has(item.id) ? <CheckCircle2 size={20} fill="white"/> : <Circle size={20} className="text-gray-300"/>}</div>)}
-                    <div className={cn("w-16 h-16 flex items-center justify-center rounded-2xl shadow-sm transition-transform z-10", item.type === 'folder' ? "bg-blue-100 text-blue-500" : "bg-white border border-gray-200 text-gray-400")}>
-                       {item.type === 'folder' ? <Folder size={32} fill="currentColor" className="opacity-80"/> : <FileText size={32} />}
-                    </div>
-                    <div className="w-full z-10">
-                       {renamingId === item.id ? (
-                           <input autoFocus defaultValue={item.title} onBlur={(e) => handleItemRenameConfirm(item.id, e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleItemRenameConfirm(item.id, e.currentTarget.value)} onClick={(e) => e.stopPropagation()} className="w-full text-center text-sm border-b border-blue-500 outline-none bg-transparent"/>
-                       ) : (
-                           <><div className="font-medium text-gray-700 text-sm truncate">{item.title}</div><div className="text-[10px] text-gray-400 mt-1">{new Date(item.createdAt).toLocaleDateString()}</div></>
-                       )}
-                    </div>
-                 </div>
-              ))}
-           </div>
+           <DndContext 
+              sensors={sensors} 
+              collisionDetection={closestCenter} 
+              onDragEnd={handleDragEnd}
+           >
+             <SortableContext items={sortedContents.map(n => n.id)} strategy={rectSortingStrategy}>
+               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 pb-20">
+                  {sortedContents.map(item => (
+                     <SortableGridItem 
+                        key={item.id} 
+                        item={item} 
+                        isSelectionMode={isSelectionMode} 
+                        isSelected={selectedIds.has(item.id)}
+                        onClick={(e) => { 
+                            if(!isSelectionMode && sortConfig.key !== 'order') e.stopPropagation(); // 阻止拖拽时的误触
+                            onItemClick(item.id); 
+                        }}
+                        onContextMenu={(e) => handleContextMenu(item.id, e)}
+                     >
+                        {/* 自定义选择圈 */}
+                        {isSelectionMode && (<div className="absolute top-2 right-2 text-blue-500 z-50">{selectedIds.has(item.id) ? <CheckCircle2 size={20} fill="white"/> : <Circle size={20} className="text-gray-300"/>}</div>)}
+                        
+                        <div className={cn("w-16 h-16 flex items-center justify-center rounded-2xl shadow-sm transition-transform z-10", item.type === 'folder' ? "bg-blue-100 text-blue-500" : "bg-white border border-gray-200 text-gray-400")}>
+                           {item.type === 'folder' ? <Folder size={32} fill="currentColor" className="opacity-80"/> : <FileText size={32} />}
+                        </div>
+                        
+                        <div className="w-full z-10">
+                           {renamingId === item.id ? (
+                               <input autoFocus defaultValue={item.title} onBlur={(e) => handleItemRenameConfirm(item.id, e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleItemRenameConfirm(item.id, e.currentTarget.value)} onClick={(e) => e.stopPropagation()} className="w-full text-center text-sm border-b border-blue-500 outline-none bg-transparent"/>
+                           ) : (
+                               <><div className="font-medium text-gray-700 text-sm truncate">{item.title}</div><div className="text-[10px] text-gray-400 mt-1">{new Date(item.createdAt).toLocaleDateString()}</div></>
+                           )}
+                        </div>
+                     </SortableGridItem>
+                  ))}
+               </div>
+             </SortableContext>
+           </DndContext>
         )}
       </div>
 
+      {/* 底部菜单 (保持不变) */}
       {isSelectionMode && (
         <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-3 flex justify-around items-center shadow-[0_-4px_20px_rgba(0,0,0,0.1)] z-20 animate-in slide-in-from-bottom duration-200">
            <button onClick={() => { onCopy(Array.from(selectedIds)); setIsSelectionMode(false); }} className="flex flex-col items-center gap-1 text-gray-600 hover:text-blue-600 disabled:opacity-30" disabled={selectedIds.size===0}><Copy size={20}/><span className="text-[10px]">复制</span></button>
@@ -628,6 +665,7 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
         </div>
       )}
 
+      {/* 右键菜单 (保持不变) */}
       {contextMenu && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setContextMenu(null)}></div>
@@ -652,6 +690,7 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
     </div>
   );
 }
+
 // --- [更新] 知识点编辑器：增加返回按钮 ---
 function NoteEditor({ nodeId, onBack, onNavigate }) {
   const note = useLiveQuery(() => db.notes.get(nodeId), [nodeId]);
@@ -952,6 +991,38 @@ function MultiImageUpload({ images = [], onChange, max = 9 }) {
           />
         </div>
       )}
+    </div>
+  );
+}
+
+// --- [新增] 可拖拽的网格项 ---
+function SortableGridItem({ item, isSelectionMode, isSelected, onClick, onContextMenu, onTouchStart, children }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
+  
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 50 : 'auto',
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      onClick={onClick}
+      onContextMenu={onContextMenu}
+      // 保留原有触摸逻辑供外部使用，dnd-kit 会自动处理长按拖拽
+      className={cn(
+        "group p-4 rounded-xl border cursor-pointer transition-all flex flex-col items-center gap-3 text-center relative select-none touch-manipulation",
+        isSelectionMode && isSelected ? "bg-blue-50 border-blue-300 ring-2 ring-blue-200" : "hover:bg-gray-50 border-transparent hover:border-gray-200",
+        isSelectionMode && !isSelected && "opacity-60 grayscale",
+        isDragging && "shadow-2xl scale-105 bg-white ring-2 ring-blue-500 z-50"
+      )}
+    >
+      {children}
     </div>
   );
 }
