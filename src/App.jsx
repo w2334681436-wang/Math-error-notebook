@@ -142,13 +142,12 @@ function MistakeSystem() {
 }
 
 // ==========================================
-// 模块二：笔记系统 (NoteSystem) - [替换此函数]
+// 模块二：笔记系统 (NoteSystem) - [修复创建功能]
 // ==========================================
 function NoteSystem() {
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(true); 
-  // [新增] 控制侧边栏宽度状态
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false); 
 
   const allNotes = useLiveQuery(() => db.notes.orderBy('order').toArray()) || [];
@@ -172,12 +171,12 @@ function NoteSystem() {
     });
   }, [allNotes, searchTerm]);
 
+  // [修复] 修正了这里导致创建失败的语法错误
   const handleCreate = async (type, parentId = 'root') => {
     await db.notes.add({
       parentId,
-      title,
-      type: type === 'folder' ? 'folder' : 'file',
       title: type === 'folder' ? '新建文件夹' : '新建知识点',
+      type,
       content: [],
       tags: [],
       order: Date.now(),
@@ -205,7 +204,7 @@ function NoteSystem() {
     const overNode = allNotes.find(n => n.id === over.id);
 
     if (!activeNode || !overNode) return;
-    if (isDescendant(activeNode.id, overNode.id)) return;
+    if (isDescendant(activeNode.id, overNode.id)) return; 
 
     if (overNode.type === 'folder' && activeNode.parentId !== overNode.id) {
        await db.notes.update(activeNode.id, { parentId: overNode.id });
@@ -228,17 +227,15 @@ function NoteSystem() {
 
   return (
     <div className="flex h-full bg-white">
-      {/* 左侧目录栏 - [修改] 动态宽度 + 横向滚动 */}
       <div 
         className={cn(
             "bg-gray-50 border-r border-gray-200 flex flex-col transition-all duration-300 absolute md:relative z-20 h-full shadow-lg md:shadow-none", 
             !mobileMenuOpen && "-translate-x-full md:translate-x-0",
-            isSidebarExpanded ? "w-96" : "w-64" // [关键] 宽度切换逻辑
+            isSidebarExpanded ? "w-96" : "w-64"
         )}
       >
         <div className="p-3 border-b border-gray-200 flex gap-2 items-center">
           <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full text-xs bg-white border rounded px-2 py-1.5 focus:outline-blue-500" placeholder="搜索..." />
-          {/* [新增] 展开/收起按钮 */}
           <button 
              onClick={() => setIsSidebarExpanded(!isSidebarExpanded)} 
              className="hidden md:flex p-1.5 hover:bg-gray-200 rounded text-gray-500 transition"
@@ -249,7 +246,6 @@ function NoteSystem() {
           <button onClick={() => setMobileMenuOpen(false)} className="md:hidden"><X size={16}/></button>
         </div>
         
-        {/* [修改] 增加 overflow-x-auto 支持横向滚动 */}
         <div className="flex-1 overflow-y-auto overflow-x-auto p-2">
           {searchTerm ? (
             <div className="space-y-1 min-w-max">
@@ -264,9 +260,8 @@ function NoteSystem() {
           ) : (
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
               <SortableContext items={allNotes.map(n => n.id)} strategy={verticalListSortingStrategy}>
-                 {/* [关键] min-w-max 确保内容不换行，触发滚动 */}
                  <div className="min-w-max pb-4 pr-4"> 
-                    <NoteTree nodes={noteTree} selectedId={selectedNodeId} onSelect={(id) => { setSelectedNodeId(id); if(window.innerWidth < 768) setMobileMenuOpen(false); }} onCreate={handleCreate} />
+                    <NoteTree nodes={noteTree} selectedId={selectedNodeId} onSelect={(id) => { setSelectedNodeId(id); if(window.innerWidth <768) setMobileMenuOpen(false); }} onCreate={handleCreate} />
                  </div>
               </SortableContext>
             </DndContext>
@@ -441,7 +436,7 @@ function MoveModal({ node, allNotes, onClose, onConfirm }) {
   );
 }
 
-// --- [更新] 文件夹资源管理器视图 ---
+// --- [修复] 文件夹资源管理器视图 (修复跳转逻辑) ---
 function FolderView({ folder, contents, onNavigate, onCreate, onBack }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState(folder.title);
@@ -452,14 +447,7 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack }) {
 
   const handleRename = async () => { if (title.trim() && title !== folder.title) { await db.notes.update(folder.id, { title: title.trim() }); } setEditingTitle(false); };
   const handleDelete = async () => { if (confirm(`确定要删除文件夹 "${folder.title}" 吗？\n里面的所有内容都将被永久删除！`)) { await deleteNoteRecursive(folder.id); onBack(); } };
-  
-  // 移动确认逻辑
-  const handleMoveConfirm = async (targetId) => { 
-      if (moveTargetNode) { 
-          await db.notes.update(moveTargetNode.id, { parentId: targetId }); 
-          setMoveTargetNode(null); 
-      } 
-  };
+  const handleMoveConfirm = async (targetId) => { if (moveTargetNode) { await db.notes.update(moveTargetNode.id, { parentId: targetId }); setMoveTargetNode(null); } };
 
   return (
     <div className="flex flex-col h-full bg-white">
@@ -481,8 +469,11 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack }) {
         ) : (
            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
               {contents.map(item => (
-                 <div key={item.id} className="group p-4 rounded-xl hover:bg-blue-50 border border-transparent hover:border-blue-100 cursor-pointer transition-all flex flex-col items-center gap-3 text-center active:scale-95 relative">
-                    <div className="absolute inset-0 z-0" onClick={() => onNavigate(item.id)}></div>
+                 <div 
+                   key={item.id} 
+                   onClick={() => onNavigate(item.id)} // [关键修复] 直接在容器上绑定点击事件
+                   className="group p-4 rounded-xl hover:bg-blue-50 border border-transparent hover:border-blue-100 cursor-pointer transition-all flex flex-col items-center gap-3 text-center active:scale-95 relative"
+                 >
                     <div className={cn("w-16 h-16 flex items-center justify-center rounded-2xl shadow-sm transition-transform group-hover:-translate-y-1 z-10", item.type === 'folder' ? "bg-blue-100 text-blue-500" : "bg-white border border-gray-200 text-gray-400")}>
                        {item.type === 'folder' ? <Folder size={32} fill="currentColor" className="opacity-80"/> : <FileText size={32} />}
                     </div>
@@ -490,7 +481,7 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack }) {
                        <div className="font-medium text-gray-700 text-sm truncate group-hover:text-blue-700">{item.title}</div>
                        <div className="text-[10px] text-gray-400 mt-1">{new Date(item.createdAt).toLocaleDateString()}</div>
                     </div>
-                    {/* 移动按钮 */}
+                    {/* 移动按钮：阻止冒泡，防止触发 onNavigate */}
                     <button 
                         onClick={(e) => { e.stopPropagation(); setMoveTargetNode(item); }} 
                         className="absolute top-2 right-2 p-1.5 bg-white shadow-md rounded-full text-gray-500 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity z-20" 
@@ -503,15 +494,7 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack }) {
            </div>
         )}
       </div>
-      {/* 弹窗渲染：确保 allNotes 传递正确 */}
-      {moveTargetNode && (
-          <MoveModal 
-            node={moveTargetNode} 
-            allNotes={allNotes} 
-            onClose={() => setMoveTargetNode(null)} 
-            onConfirm={handleMoveConfirm}
-          />
-      )}
+      {moveTargetNode && (<MoveModal node={moveTargetNode} allNotes={allNotes} onClose={() => setMoveTargetNode(null)} onConfirm={handleMoveConfirm}/>)}
     </div>
   );
 }
