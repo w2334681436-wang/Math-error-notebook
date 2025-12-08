@@ -165,15 +165,13 @@ function MistakeSystem() {
 }
 
 // ==========================================
-// 模块二：笔记系统 (NoteSystem) - [增强版：支持剪贴板]
+// 模块二：笔记系统 (NoteSystem) - [支持创建后返回ID]
 // ==========================================
 function NoteSystem() {
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(true); 
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false); 
-  
-  // [新增] 剪贴板状态 { items: [id1, id2], mode: 'copy' | 'move' }
   const [clipboard, setClipboard] = useState({ items: [], mode: 'copy' });
 
   const allNotes = useLiveQuery(() => db.notes.orderBy('order').toArray()) || [];
@@ -194,38 +192,32 @@ function NoteSystem() {
     });
   }, [allNotes, searchTerm]);
 
+  // [关键修改] 这里现在返回新创建的 ID
   const handleCreate = async (type, parentId = 'root') => {
-    await db.notes.add({
-      parentId, title: type === 'folder' ? '新建文件夹' : '新建知识点', type, content: [], tags: [], order: Date.now(), createdAt: new Date()
+    const newId = await db.notes.add({
+      parentId,
+      title: type === 'folder' ? '新建文件夹' : '新建知识点',
+      type,
+      content: [],
+      tags: [],
+      order: Date.now(),
+      createdAt: new Date()
     });
+    return newId; // 返回 ID 供 UI 聚焦
   };
 
-  // [新增] 剪贴板操作函数
-  const handleAddToClipboard = (ids, mode) => {
-    setClipboard({ items: ids, mode });
-    // alert(`已${mode === 'copy' ? '复制' : '剪切'} ${ids.length} 个项目`);
-  };
+  const handleAddToClipboard = (ids, mode) => { setClipboard({ items: ids, mode }); };
 
   const handlePaste = async (targetParentId) => {
     if (clipboard.items.length === 0) return;
-    
     if (clipboard.mode === 'move') {
-      // 移动模式：直接更新 parentId
-      // 注意：这里没做严格的死循环检测(父拖子)，建议在 UI 层或此处加 isDescendant 判断
       for (const id of clipboard.items) {
          const node = allNotes.find(n => n.id === id);
-         // 简单防死循环：不能移动到自己里面
-         if (node && node.id !== targetParentId) {
-            await db.notes.update(id, { parentId: targetParentId, order: Date.now() });
-         }
+         if (node && node.id !== targetParentId) { await db.notes.update(id, { parentId: targetParentId, order: Date.now() }); }
       }
-      setClipboard({ items: [], mode: 'copy' }); // 移动完清空
+      setClipboard({ items: [], mode: 'copy' });
     } else {
-      // 复制模式：递归克隆
-      for (const id of clipboard.items) {
-        await cloneNodeRecursive(id, targetParentId);
-      }
-      // 复制模式不清空，可以多次粘贴
+      for (const id of clipboard.items) { await cloneNodeRecursive(id, targetParentId); }
     }
   };
 
@@ -269,7 +261,6 @@ function NoteSystem() {
 
   return (
     <div className="flex h-full bg-white">
-      {/* 左侧目录栏 (保持不变) */}
       <div className={cn("bg-gray-50 border-r border-gray-200 flex flex-col transition-all duration-300 absolute md:relative z-20 h-full shadow-lg md:shadow-none", !mobileMenuOpen && "-translate-x-full md:translate-x-0", isSidebarExpanded ? "w-96" : "w-64")}>
         <div className="p-3 border-b border-gray-200 flex gap-2 items-center">
           <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full text-xs bg-white border rounded px-2 py-1.5 focus:outline-blue-500" placeholder="搜索..." />
@@ -305,7 +296,6 @@ function NoteSystem() {
       <div className="flex-1 h-full overflow-hidden flex flex-col relative bg-white">
         {!mobileMenuOpen && (<button onClick={() => setMobileMenuOpen(true)} className="absolute top-4 left-4 z-10 p-2 bg-white shadow-md border rounded-full md:hidden"><ChevronRightIcon size={20} /></button>)}
         
-        {/* 右侧视图逻辑 */}
         {selectedNode ? (
           selectedNode.type === 'folder' ? (
             <FolderView 
@@ -314,7 +304,6 @@ function NoteSystem() {
               onNavigate={setSelectedNodeId} 
               onCreate={handleCreate} 
               onBack={() => setSelectedNodeId(selectedNode.parentId === 'root' ? null : selectedNode.parentId)}
-              // [新增] 传递剪贴板操作
               onCopy={(ids) => handleAddToClipboard(ids, 'copy')}
               onCut={(ids) => handleAddToClipboard(ids, 'move')}
               onPaste={() => handlePaste(selectedNode.id)}
@@ -463,26 +452,42 @@ function MoveModal({ node, allNotes, onClose, onConfirm }) {
   );
 }
 
-// --- [重构版] 文件夹视图：支持长按菜单、多选、剪贴板 ---
+// --- [重构版] 文件夹视图：支持新建重命名、双悬浮按钮 ---
 function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, onCut, onPaste, clipboardCount }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState(folder.title);
   
-  // 状态管理
+  // [新增] 正在重命名的子项ID (不为null时显示输入框)
+  const [renamingId, setRenamingId] = useState(null);
+
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const [contextMenu, setContextMenu] = useState(null); // { x, y, targetId }
-  const [moveTargetModal, setMoveTargetModal] = useState(false); // 控制批量移动弹窗
+  const [contextMenu, setContextMenu] = useState(null);
+  const [moveTargetModal, setMoveTargetModal] = useState(false);
   
   const allNotes = useLiveQuery(() => db.notes.toArray()) || [];
 
-  useEffect(() => { setTitle(folder.title); setSelectedIds(new Set()); setIsSelectionMode(false); }, [folder.id]);
+  useEffect(() => { setTitle(folder.title); setSelectedIds(new Set()); setIsSelectionMode(false); setRenamingId(null); }, [folder.id]);
 
   // --- 逻辑处理 ---
   const handleRename = async () => { if (title.trim()) await db.notes.update(folder.id, { title: title.trim() }); setEditingTitle(false); };
+  
+  // [新增] 处理新建并自动进入重命名
+  const handleCreateWrapper = async (type) => {
+      const newId = await onCreate(type, folder.id);
+      setRenamingId(newId); // 新建后立即进入重命名模式
+  };
+
+  // [新增] 处理子项重命名完成
+  const handleItemRenameConfirm = async (id, newName) => {
+      if (newName.trim()) {
+          await db.notes.update(id, { title: newName.trim() });
+      }
+      setRenamingId(null);
+  };
+
   const handleDeleteFolder = async () => { if (confirm('确定删除此文件夹及其内容吗？')) { await deleteNoteRecursive(folder.id); onBack(); } };
 
-  // 批量删除
   const handleBulkDelete = async () => {
     if (confirm(`确定删除选中的 ${selectedIds.size} 项吗？`)) {
       for (const id of selectedIds) await deleteNoteRecursive(id);
@@ -491,10 +496,8 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
     }
   };
 
-  // 批量移动确认
   const handleBulkMoveConfirm = async (targetId) => {
     for (const id of selectedIds) {
-       // 简单的死循环检查
        if (id !== targetId) await db.notes.update(id, { parentId: targetId });
     }
     setMoveTargetModal(false);
@@ -502,30 +505,17 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
     setIsSelectionMode(false);
   };
 
-  // --- 交互处理 (长按/右键) ---
   const longPressTimer = React.useRef(null);
-
   const handleTouchStart = (id, e) => {
-    if (isSelectionMode) return; // 选择模式下禁用长按菜单
+    if (isSelectionMode) return; 
     longPressTimer.current = setTimeout(() => {
       const touch = e.touches[0];
       setContextMenu({ x: touch.clientX, y: touch.clientY, targetId: id });
-    }, 600); // 600ms 触发长按
+    }, 600); 
   };
-
-  const handleTouchEnd = () => {
-    if (longPressTimer.current) clearTimeout(longPressTimer.current);
-  };
-
-  const handleContextMenu = (id, e) => {
-    e.preventDefault();
-    if (isSelectionMode) return;
-    setContextMenu({ x: e.clientX, y: e.clientY, targetId: id });
-  };
-
-  // 空白区域右键/长按 (用于粘贴)
+  const handleTouchEnd = () => { if (longPressTimer.current) clearTimeout(longPressTimer.current); };
+  const handleContextMenu = (id, e) => { e.preventDefault(); if (isSelectionMode) return; setContextMenu({ x: e.clientX, y: e.clientY, targetId: id }); };
   const handleContainerContextMenu = (e) => {
-    // 只有点在空白处才触发
     if (e.target === e.currentTarget) {
       e.preventDefault();
       const x = e.touches ? e.touches[0].clientX : e.clientX;
@@ -534,48 +524,23 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
     }
   };
 
-  // 选中逻辑
-  const toggleSelection = (id) => {
-    const newSet = new Set(selectedIds);
-    if (newSet.has(id)) newSet.delete(id);
-    else newSet.add(id);
-    setSelectedIds(newSet);
-  };
+  const toggleSelection = (id) => { const newSet = new Set(selectedIds); if (newSet.has(id)) newSet.delete(id); else newSet.add(id); setSelectedIds(newSet); };
+  const onItemClick = (id) => { if (isSelectionMode) { toggleSelection(id); } else { onNavigate(id); } };
 
-  const onItemClick = (id) => {
-    if (isSelectionMode) {
-      toggleSelection(id);
-    } else {
-      onNavigate(id);
-    }
-  };
-
-  // 菜单动作
   const handleMenuAction = (action) => {
     const targetId = contextMenu?.targetId;
     if (!targetId) return;
-
-    if (action === 'rename') {
-       const newName = prompt("重命名为:");
-       if (newName) db.notes.update(targetId, { title: newName });
-    } else if (action === 'copy') {
-       onCopy([targetId]);
-    } else if (action === 'cut') {
-       onCut([targetId]);
-    } else if (action === 'delete') {
-       if (confirm("删除此项？")) deleteNoteRecursive(targetId);
-    } else if (action === 'select') {
-       setIsSelectionMode(true);
-       setSelectedIds(new Set([targetId]));
-    } else if (action === 'paste') {
-       onPaste();
-    }
+    if (action === 'rename') { setRenamingId(targetId); } 
+    else if (action === 'copy') { onCopy([targetId]); } 
+    else if (action === 'cut') { onCut([targetId]); } 
+    else if (action === 'delete') { if (confirm("删除此项？")) deleteNoteRecursive(targetId); } 
+    else if (action === 'select') { setIsSelectionMode(true); setSelectedIds(new Set([targetId])); } 
+    else if (action === 'paste') { onPaste(); }
     setContextMenu(null);
   };
 
   return (
     <div className="flex flex-col h-full bg-white relative" onContextMenu={handleContainerContextMenu}>
-      {/* 头部 */}
       <div className="p-4 border-b border-gray-100 flex items-center gap-3 sticky top-0 bg-white/95 backdrop-blur z-10">
         {folder.parentId !== 'root' && (<button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500"><ArrowUpLeft size={20}/></button>)}
         <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Folder size={24}/></div>
@@ -583,28 +548,12 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
            {editingTitle ? (<input autoFocus value={title} onChange={e => setTitle(e.target.value)} onBlur={handleRename} onKeyDown={e => e.key === 'Enter' && handleRename()} className="text-xl font-bold w-full border-b border-blue-500 outline-none"/>) : (<h2 onClick={() => setEditingTitle(true)} className="text-xl font-bold text-gray-800 truncate" title="点击重命名">{folder.title}</h2>)}
            <p className="text-xs text-gray-400 mt-0.5">{contents.length} 个项目</p>
         </div>
-        
-        {/* 编辑/取消按钮 */}
-        <button 
-          onClick={() => { setIsSelectionMode(!isSelectionMode); setSelectedIds(new Set()); }}
-          className={cn("p-2 rounded-full font-bold text-xs flex items-center gap-1 transition", isSelectionMode ? "bg-blue-100 text-blue-600" : "hover:bg-gray-100 text-gray-600")}
-        >
-          {isSelectionMode ? '完成' : <><CheckSquare size={18}/> 编辑</>}
-        </button>
+        <button onClick={() => { setIsSelectionMode(!isSelectionMode); setSelectedIds(new Set()); }} className={cn("p-2 rounded-full font-bold text-xs flex items-center gap-1 transition", isSelectionMode ? "bg-blue-100 text-blue-600" : "hover:bg-gray-100 text-gray-600")}>{isSelectionMode ? '完成' : <><CheckSquare size={18}/> 编辑</>}</button>
       </div>
 
-      {/* 内容网格 */}
-      <div 
-        className="flex-1 overflow-y-auto p-4" 
-        onClick={() => setContextMenu(null)} // 点击空白关闭菜单
-        onTouchStart={(e) => { if(e.target === e.currentTarget) handleTouchStart('folder_bg', e) }}
-        onTouchEnd={handleTouchEnd}
-      >
+      <div className="flex-1 overflow-y-auto p-4" onClick={() => setContextMenu(null)} onTouchStart={(e) => { if(e.target === e.currentTarget) handleTouchStart('folder_bg', e) }} onTouchEnd={handleTouchEnd}>
         {contents.length === 0 ? (
-           <div className="h-full flex flex-col items-center justify-center text-gray-300">
-             <div className="w-16 h-16 border-2 border-dashed border-gray-200 rounded-xl flex items-center justify-center mb-2"><Folder size={24} className="opacity-20"/></div>
-             <p className="text-sm">长按空白处粘贴</p>
-           </div>
+           <div className="h-full flex flex-col items-center justify-center text-gray-300"><div className="w-16 h-16 border-2 border-dashed border-gray-200 rounded-xl flex items-center justify-center mb-2"><Folder size={24} className="opacity-20"/></div><p className="text-sm">长按空白处粘贴</p></div>
         ) : (
            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 pb-20">
               {contents.map(item => (
@@ -614,25 +563,29 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
                    onTouchStart={(e) => handleTouchStart(item.id, e)}
                    onTouchEnd={handleTouchEnd}
                    onContextMenu={(e) => handleContextMenu(item.id, e)}
-                   className={cn(
-                     "group p-4 rounded-xl border cursor-pointer transition-all flex flex-col items-center gap-3 text-center relative select-none",
-                     isSelectionMode && selectedIds.has(item.id) ? "bg-blue-50 border-blue-300 ring-2 ring-blue-200" : "hover:bg-gray-50 border-transparent hover:border-gray-200",
-                     isSelectionMode && !selectedIds.has(item.id) && "opacity-60 grayscale"
-                   )}
+                   className={cn("group p-4 rounded-xl border cursor-pointer transition-all flex flex-col items-center gap-3 text-center relative select-none", isSelectionMode && selectedIds.has(item.id) ? "bg-blue-50 border-blue-300 ring-2 ring-blue-200" : "hover:bg-gray-50 border-transparent hover:border-gray-200", isSelectionMode && !selectedIds.has(item.id) && "opacity-60 grayscale")}
                  >
-                    {/* 选择圈圈 */}
-                    {isSelectionMode && (
-                      <div className="absolute top-2 right-2 text-blue-500">
-                        {selectedIds.has(item.id) ? <CheckCircle2 size={20} fill="white"/> : <Circle size={20} className="text-gray-300"/>}
-                      </div>
-                    )}
-
+                    {isSelectionMode && (<div className="absolute top-2 right-2 text-blue-500">{selectedIds.has(item.id) ? <CheckCircle2 size={20} fill="white"/> : <Circle size={20} className="text-gray-300"/>}</div>)}
                     <div className={cn("w-16 h-16 flex items-center justify-center rounded-2xl shadow-sm transition-transform z-10", item.type === 'folder' ? "bg-blue-100 text-blue-500" : "bg-white border border-gray-200 text-gray-400")}>
                        {item.type === 'folder' ? <Folder size={32} fill="currentColor" className="opacity-80"/> : <FileText size={32} />}
                     </div>
                     <div className="w-full z-10">
-                       <div className="font-medium text-gray-700 text-sm truncate">{item.title}</div>
-                       <div className="text-[10px] text-gray-400 mt-1">{new Date(item.createdAt).toLocaleDateString()}</div>
+                       {/* [关键逻辑] 如果是正在重命名的ID，显示输入框 */}
+                       {renamingId === item.id ? (
+                           <input 
+                             autoFocus
+                             defaultValue={item.title}
+                             onBlur={(e) => handleItemRenameConfirm(item.id, e.target.value)}
+                             onKeyDown={(e) => e.key === 'Enter' && handleItemRenameConfirm(item.id, e.currentTarget.value)}
+                             onClick={(e) => e.stopPropagation()} // 防止触发导航
+                             className="w-full text-center text-sm border-b border-blue-500 outline-none bg-transparent"
+                           />
+                       ) : (
+                           <>
+                             <div className="font-medium text-gray-700 text-sm truncate">{item.title}</div>
+                             <div className="text-[10px] text-gray-400 mt-1">{new Date(item.createdAt).toLocaleDateString()}</div>
+                           </>
+                       )}
                     </div>
                  </div>
               ))}
@@ -640,7 +593,6 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
         )}
       </div>
 
-      {/* 底部功能栏 (多选模式下显示) */}
       {isSelectionMode && (
         <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-3 flex justify-around items-center shadow-[0_-4px_20px_rgba(0,0,0,0.1)] z-20 animate-in slide-in-from-bottom duration-200">
            <button onClick={() => { onCopy(Array.from(selectedIds)); setIsSelectionMode(false); }} className="flex flex-col items-center gap-1 text-gray-600 hover:text-blue-600 disabled:opacity-30" disabled={selectedIds.size===0}><Copy size={20}/><span className="text-[10px]">复制</span></button>
@@ -650,30 +602,33 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
         </div>
       )}
 
-      {/* 底部常规栏 (非多选模式) */}
+      {/* [修改] 底部悬浮按钮组：支持添加文件夹和文件 */}
       {!isSelectionMode && (
         <div className="absolute bottom-6 right-6 z-20 flex flex-col gap-3">
-           {/* 快捷新建 */}
-           <button onClick={() => onCreate('file', folder.id)} className="w-12 h-12 bg-blue-600 text-white rounded-full shadow-lg flex items-center justify-center hover:bg-blue-700 transition"><Plus size={24}/></button>
+           <button 
+             onClick={() => handleCreateWrapper('folder')} 
+             className="w-12 h-12 bg-white text-gray-600 rounded-full shadow-lg flex items-center justify-center hover:bg-gray-50 border border-gray-100 transition"
+             title="新建文件夹"
+           >
+             <Folder size={20}/>
+           </button>
+           <button 
+             onClick={() => handleCreateWrapper('file')} 
+             className="w-12 h-12 bg-blue-600 text-white rounded-full shadow-lg flex items-center justify-center hover:bg-blue-700 transition"
+             title="新建知识点"
+           >
+             <Plus size={24}/>
+           </button>
         </div>
       )}
 
-      {/* 右键/长按菜单 Overlay */}
       {contextMenu && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setContextMenu(null)}></div>
-          <div 
-            className="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-100 py-1 w-32 animate-in zoom-in-95 duration-100 overflow-hidden"
-            style={{ top: Math.min(contextMenu.y, window.innerHeight - 200), left: Math.min(contextMenu.x, window.innerWidth - 128) }}
-          >
+          <div className="fixed z-50 bg-white rounded-lg shadow-xl border border-gray-100 py-1 w-32 animate-in zoom-in-95 duration-100 overflow-hidden" style={{ top: Math.min(contextMenu.y, window.innerHeight - 200), left: Math.min(contextMenu.x, window.innerWidth - 128) }}>
             {contextMenu.targetId === 'folder_bg' ? (
-               // 空白处菜单
-               <button onClick={() => handleMenuAction('paste')} className="w-full px-4 py-3 text-left text-sm hover:bg-gray-50 flex items-center gap-2" disabled={clipboardCount === 0}>
-                 <Clipboard size={16} className={clipboardCount > 0 ? "text-blue-600" : "text-gray-400"}/> 
-                 <span className={clipboardCount > 0 ? "text-gray-800" : "text-gray-400"}>粘贴 ({clipboardCount})</span>
-               </button>
+               <button onClick={() => handleMenuAction('paste')} className="w-full px-4 py-3 text-left text-sm hover:bg-gray-50 flex items-center gap-2" disabled={clipboardCount === 0}><Clipboard size={16} className={clipboardCount > 0 ? "text-blue-600" : "text-gray-400"}/><span className={clipboardCount > 0 ? "text-gray-800" : "text-gray-400"}>粘贴 ({clipboardCount})</span></button>
             ) : (
-               // 文件项菜单
                <>
                  <button onClick={() => handleMenuAction('select')} className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-50 flex items-center gap-2 text-gray-700"><CheckCircle2 size={16}/> 多选</button>
                  <button onClick={() => handleMenuAction('rename')} className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-50 flex items-center gap-2 text-gray-700"><Edit size={16}/> 重命名</button>
@@ -687,19 +642,10 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
         </>
       )}
 
-      {/* 批量移动时的目标选择弹窗 */}
-      {moveTargetModal && (
-          <MoveModal 
-             node={{ title: `${selectedIds.size} 个项目`, parentId: folder.id, id: 'bulk_move' }} // 伪造一个节点用于传递上下文
-             allNotes={allNotes} 
-             onClose={() => setMoveTargetModal(false)} 
-             onConfirm={handleBulkMoveConfirm}
-          />
-      )}
+      {moveTargetModal && (<MoveModal node={{ title: `${selectedIds.size} 个项目`, parentId: folder.id, id: 'bulk_move' }} allNotes={allNotes} onClose={() => setMoveTargetModal(false)} onConfirm={handleBulkMoveConfirm}/>)}
     </div>
   );
 }
-
 function NoteEditor({ nodeId, onBack }) {
   const note = useLiveQuery(() => db.notes.get(nodeId), [nodeId]);
   const [editingTitle, setEditingTitle] = useState(false);
