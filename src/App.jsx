@@ -911,12 +911,21 @@ function ImageUpload({ value, onChange, isAnalysis }) {
   )
 }
 
-// --- [替换] 错题详情：使用 Markdown 渲染 ---
+// --- [修复版] 错题详情：正确渲染 LaTeX ---
 function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, hasPrev, onBack }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
+  
+  // 切换题目时重置解析显示状态
   useEffect(() => { setShowAnalysis(false); }, [mistake.id]);
-  const handleDelete = async () => { if(confirm('删除后无法恢复，确定吗？')) { await db.mistakes.delete(mistake.id); onDelete(); } }
+  
+  const handleDelete = async () => { 
+    if(confirm('删除后无法恢复，确定吗？')) { 
+      await db.mistakes.delete(mistake.id); 
+      onDelete(); 
+    } 
+  }
 
+  // 兼容多图和单图
   const images = mistake.questionImages || (mistake.questionImg ? [mistake.questionImg] : []);
 
   return (
@@ -933,6 +942,7 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
       </div>
       
       <div className="p-4 space-y-6">
+        {/* 题目图片 */}
         <div className="space-y-2">
           {images.map((img, idx) => (
             <div key={idx} className="rounded-xl overflow-hidden border border-gray-100 shadow-sm relative">
@@ -943,6 +953,7 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
           {images.length === 0 && <div className="p-8 text-center text-gray-300 bg-gray-50 rounded-xl">无图片</div>}
         </div>
 
+        {/* 底部悬浮栏 */}
         <div className="fixed bottom-20 w-full max-w-3xl left-1/2 -translate-x-1/2 px-4 z-20 flex items-center justify-center pointer-events-none">
           <div className="bg-white/95 backdrop-blur-md p-2 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.15)] border border-gray-200 flex items-center gap-3 pointer-events-auto">
              {hasPrev && (<><button onClick={onPrev} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition" title="上一题"><ChevronLeft size={24} /></button><div className="h-6 w-[1px] bg-gray-200"></div></>)}
@@ -953,15 +964,19 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
           </div>
         </div>
 
+        {/* 解析区域 */}
         <div className={cn("space-y-4 transition-all duration-300", showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden')}>
           <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm"><div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div><p className="whitespace-pre-wrap text-gray-800 leading-relaxed">{mistake.reflection || "暂无复盘记录"}</p></div>
           <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm">
             <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
-            {mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-4 border border-gray-100"/>}
+            {mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/>}
             
-            {/* [核心修改] 使用 ReactMarkdown 渲染，而不是直接显示文字 */}
+            {/* [关键修复] 这里改用 ReactMarkdown 渲染，之前是直接输出文本 */}
             <div className="text-gray-700 text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100">
-               <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
+               <ReactMarkdown 
+                 remarkPlugins={[remarkGfm, remarkMath]} 
+                 rehypePlugins={[rehypeKatex]}
+               >
                  {mistake.analysisText || "暂无文字解析"}
                </ReactMarkdown>
             </div>
