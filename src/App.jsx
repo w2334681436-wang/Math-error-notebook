@@ -15,6 +15,10 @@ import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSo
 import { CSS } from '@dnd-kit/utilities';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 
 // --- 工具函数 ---
 function cn(...inputs) { return twMerge(clsx(inputs)); }
@@ -801,12 +805,12 @@ function MistakeList({ mistakes, onAdd, onOpen }) {
   );
 }
 
-// --- [替换] 错题表单组件 ---
+// --- [替换] 错题表单：支持 Markdown/LaTeX 预览 ---
 function MistakeForm({ mode, initialData, onFinish, onCancel }) {
   const isEdit = mode === 'edit';
   const [title, setTitle] = useState(initialData?.title || '');
   
-  // 兼容旧数据: 如果有 questionImages 数组则用数组，否则看 questionImg，否则为空
+  // 兼容旧数据
   const [qImages, setQImages] = useState(
     initialData?.questionImages || (initialData?.questionImg ? [initialData.questionImg] : [])
   );
@@ -815,6 +819,8 @@ function MistakeForm({ mode, initialData, onFinish, onCancel }) {
   const [reflection, setReflection] = useState(initialData?.reflection || '');
   const [analysisText, setAnalysisText] = useState(initialData?.analysisText || '');
   const [loading, setLoading] = useState(false);
+  
+  // [新增] 预览模式状态
   const [isPreviewMode, setIsPreviewMode] = useState(false);
 
   const handleSubmit = async () => {
@@ -823,7 +829,7 @@ function MistakeForm({ mode, initialData, onFinish, onCancel }) {
     const data = { 
       title, 
       questionImages: qImages, 
-      questionImg: qImages[0], // 冗余兼容
+      questionImg: qImages[0], 
       analysisImg: aImg, 
       analysisText, 
       reflection 
@@ -844,7 +850,6 @@ function MistakeForm({ mode, initialData, onFinish, onCancel }) {
       <div className="space-y-4">
         <div>
             <label className="block text-sm font-bold text-gray-700 mb-2">1. 题目图片 ({qImages.length}) <span className="text-red-500">*</span></label>
-            {/* 使用之前定义的 MultiImageUpload */}
             <MultiImageUpload images={qImages} onChange={setQImages} />
         </div>
 
@@ -861,6 +866,7 @@ function MistakeForm({ mode, initialData, onFinish, onCancel }) {
         <div className="border-t border-dashed pt-4">
           <div className="flex justify-between items-center mb-2">
              <label className="block text-sm font-bold text-gray-700">3. 答案解析 (支持 LaTeX)</label>
+             {/* [新增] 切换编辑/预览按钮 */}
              <div className="flex bg-gray-100 p-1 rounded-lg text-xs font-bold">
                 <button onClick={() => setIsPreviewMode(false)} className={cn("px-3 py-1 rounded-md transition-all", !isPreviewMode ? "bg-white shadow text-blue-600" : "text-gray-500")}>编辑</button>
                 <button onClick={() => setIsPreviewMode(true)} className={cn("px-3 py-1 rounded-md transition-all", isPreviewMode ? "bg-white shadow text-blue-600" : "text-gray-500")}>预览</button>
@@ -869,6 +875,7 @@ function MistakeForm({ mode, initialData, onFinish, onCancel }) {
           
           <ImageUpload value={aImg} onChange={setAImg} isAnalysis />
           
+          {/* [新增] 核心逻辑：如果是预览模式，调用 ReactMarkdown 渲染 */}
           {isPreviewMode ? (
             <div className="w-full mt-3 p-4 bg-gray-50 border border-gray-200 rounded-xl min-h-[160px] prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2">
                {analysisText ? (
@@ -904,7 +911,7 @@ function ImageUpload({ value, onChange, isAnalysis }) {
   )
 }
 
-// --- [替换] 错题详情组件 ---
+// --- [替换] 错题详情：使用 Markdown 渲染 ---
 function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, hasPrev, onBack }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
   useEffect(() => { setShowAnalysis(false); }, [mistake.id]);
@@ -951,6 +958,8 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
           <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm">
             <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
             {mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-4 border border-gray-100"/>}
+            
+            {/* [核心修改] 使用 ReactMarkdown 渲染，而不是直接显示文字 */}
             <div className="text-gray-700 text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100">
                <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
                  {mistake.analysisText || "暂无文字解析"}
