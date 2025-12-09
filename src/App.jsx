@@ -801,63 +801,100 @@ function MistakeList({ mistakes, onAdd, onOpen }) {
   );
 }
 
-// --- [更新] 错题表单：支持多图上传 ---
+// --- [替换] 错题表单组件 ---
 function MistakeForm({ mode, initialData, onFinish, onCancel }) {
   const isEdit = mode === 'edit';
   const [title, setTitle] = useState(initialData?.title || '');
   
-  // 初始化图片状态：兼容旧数据 (string -> array)
+  // 兼容旧数据: 如果有 questionImages 数组则用数组，否则看 questionImg，否则为空
   const [qImages, setQImages] = useState(
     initialData?.questionImages || (initialData?.questionImg ? [initialData.questionImg] : [])
   );
   
-  const [aImg, setAImg] = useState(initialData?.analysisImg || null); // 解析图暂时保持单张，如果需要也可改为多张
+  const [aImg, setAImg] = useState(initialData?.analysisImg || null);
   const [reflection, setReflection] = useState(initialData?.reflection || '');
   const [analysisText, setAnalysisText] = useState(initialData?.analysisText || '');
   const [loading, setLoading] = useState(false);
+  const [isPreviewMode, setIsPreviewMode] = useState(false);
 
   const handleSubmit = async () => {
-    if (qImages.length === 0) return alert("请至少上传一张题目图片");
+    if (qImages.length === 0) return alert("必须上传题目图片");
     setLoading(true);
-    
     const data = { 
       title, 
-      questionImages: qImages, // 保存数组
-      questionImg: qImages[0], // 冗余保存第一张，防止旧代码报错（可选）
+      questionImages: qImages, 
+      questionImg: qImages[0], // 冗余兼容
       analysisImg: aImg, 
       analysisText, 
       reflection 
     };
-    
     try {
       if (isEdit) await db.mistakes.update(initialData.id, data);
       else await db.mistakes.add({ ...data, createdAt: new Date() });
       onFinish();
-    } catch (e) { alert("保存失败"); console.error(e); } finally { setLoading(false); }
+    } catch (e) { alert("保存失败"); } finally { setLoading(false); }
   };
 
   return (
     <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl p-4 sm:p-6 pb-20 space-y-5 relative">
-      <div className="flex justify-between items-center mb-2"><h2 className="text-lg font-bold text-gray-800">{isEdit ? '编辑错题' : '记录错题'}</h2>{isEdit && <button onClick={onCancel}><X size={24} className="text-gray-400"/></button>}</div>
+      <div className="flex justify-between items-center mb-2">
+         <h2 className="text-lg font-bold text-gray-800">{isEdit ? '编辑错题' : '记录错题'}</h2>
+         {isEdit && <button onClick={onCancel}><X size={24} className="text-gray-400"/></button>}
+      </div>
       <div className="space-y-4">
-        
-        {/* 题目多图上传区 */}
         <div>
-          <label className="block text-sm font-bold text-gray-700 mb-2">1. 题目图片 ({qImages.length}) <span className="text-red-500">*</span></label>
-          <MultiImageUpload images={qImages} onChange={setQImages} />
+            <label className="block text-sm font-bold text-gray-700 mb-2">1. 题目图片 ({qImages.length}) <span className="text-red-500">*</span></label>
+            {/* 使用之前定义的 MultiImageUpload */}
+            <MultiImageUpload images={qImages} onChange={setQImages} />
         </div>
 
-        <div><label className="block text-sm font-bold text-gray-700 mb-2">标题 / 备注</label><input type="text" value={title} onChange={e => setTitle(e.target.value)} placeholder="例如：极限计算" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:border-blue-500 transition" /></div>
-        <div className="border-t border-dashed pt-4"><label className="block text-sm font-bold text-gray-700 mb-2">2. 复盘思路</label><textarea value={reflection} onChange={e => setReflection(e.target.value)} className="w-full p-3 bg-yellow-50 border border-yellow-200 rounded-xl h-28 text-sm outline-none focus:border-yellow-400 resize-none" placeholder="关键点在哪里？"></textarea></div>
+        <div>
+            <label className="block text-sm font-bold text-gray-700 mb-2">标题 / 备注</label>
+            <input type="text" value={title} onChange={e => setTitle(e.target.value)} placeholder="例如：极限计算" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:border-blue-500 transition" />
+        </div>
         
-        {/* 解析区保持原样 (如果解析也想多图，可以用同样的 MultiImageUpload) */}
-        <div className="border-t border-dashed pt-4"><label className="block text-sm font-bold text-gray-700 mb-2">3. 答案解析</label><ImageUpload value={aImg} onChange={setAImg} isAnalysis /><textarea value={analysisText} onChange={e => setAnalysisText(e.target.value)} className="w-full mt-3 p-3 bg-gray-50 border border-gray-200 rounded-xl h-20 text-sm outline-none focus:border-green-500 resize-none" placeholder="文字解析..."></textarea></div>
+        <div className="border-t border-dashed pt-4">
+            <label className="block text-sm font-bold text-gray-700 mb-2">2. 复盘思路</label>
+            <textarea value={reflection} onChange={e => setReflection(e.target.value)} className="w-full p-3 bg-yellow-50 border border-yellow-200 rounded-xl h-28 text-sm outline-none focus:border-yellow-400 resize-none" placeholder="关键点在哪里？"></textarea>
+        </div>
+        
+        <div className="border-t border-dashed pt-4">
+          <div className="flex justify-between items-center mb-2">
+             <label className="block text-sm font-bold text-gray-700">3. 答案解析 (支持 LaTeX)</label>
+             <div className="flex bg-gray-100 p-1 rounded-lg text-xs font-bold">
+                <button onClick={() => setIsPreviewMode(false)} className={cn("px-3 py-1 rounded-md transition-all", !isPreviewMode ? "bg-white shadow text-blue-600" : "text-gray-500")}>编辑</button>
+                <button onClick={() => setIsPreviewMode(true)} className={cn("px-3 py-1 rounded-md transition-all", isPreviewMode ? "bg-white shadow text-blue-600" : "text-gray-500")}>预览</button>
+             </div>
+          </div>
+          
+          <ImageUpload value={aImg} onChange={setAImg} isAnalysis />
+          
+          {isPreviewMode ? (
+            <div className="w-full mt-3 p-4 bg-gray-50 border border-gray-200 rounded-xl min-h-[160px] prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2">
+               {analysisText ? (
+                 <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
+                   {analysisText}
+                 </ReactMarkdown>
+               ) : (
+                 <span className="text-gray-400 italic">暂无内容...</span>
+               )}
+            </div>
+          ) : (
+            <textarea 
+              value={analysisText} 
+              onChange={e => setAnalysisText(e.target.value)} 
+              className="w-full mt-3 p-3 bg-gray-50 border border-gray-200 rounded-xl h-40 text-sm outline-none focus:border-green-500 resize-none font-mono" 
+              placeholder="可以使用 Markdown 和 LaTeX 公式，例如：$E=mc^2$"
+            ></textarea>
+          )}
+        </div>
       </div>
       <button onClick={handleSubmit} disabled={loading} className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-bold shadow-md mt-4 flex justify-center items-center gap-2"><Save size={18} /> {loading ? '保存中...' : '保存'}</button>
     </div>
   );
 }
 
+// --- [替换] 单图上传辅助组件 ---
 function ImageUpload({ value, onChange, isAnalysis }) {
   const handleFile = async (e) => { const file = e.target.files[0]; if(file) onChange(await fileToBase64(file)); };
   return (
@@ -867,13 +904,12 @@ function ImageUpload({ value, onChange, isAnalysis }) {
   )
 }
 
-// --- [修复版] 错题详情：修复解析区域的语法错误 ---
+// --- [替换] 错题详情组件 ---
 function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, hasPrev, onBack }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
   useEffect(() => { setShowAnalysis(false); }, [mistake.id]);
   const handleDelete = async () => { if(confirm('删除后无法恢复，确定吗？')) { await db.mistakes.delete(mistake.id); onDelete(); } }
 
-  // 兼容多图和单图
   const images = mistake.questionImages || (mistake.questionImg ? [mistake.questionImg] : []);
 
   return (
@@ -890,7 +926,6 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
       </div>
       
       <div className="p-4 space-y-6">
-        {/* 题目图片 */}
         <div className="space-y-2">
           {images.map((img, idx) => (
             <div key={idx} className="rounded-xl overflow-hidden border border-gray-100 shadow-sm relative">
@@ -901,7 +936,6 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
           {images.length === 0 && <div className="p-8 text-center text-gray-300 bg-gray-50 rounded-xl">无图片</div>}
         </div>
 
-        {/* 底部悬浮栏 */}
         <div className="fixed bottom-20 w-full max-w-3xl left-1/2 -translate-x-1/2 px-4 z-20 flex items-center justify-center pointer-events-none">
           <div className="bg-white/95 backdrop-blur-md p-2 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.15)] border border-gray-200 flex items-center gap-3 pointer-events-auto">
              {hasPrev && (<><button onClick={onPrev} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition" title="上一题"><ChevronLeft size={24} /></button><div className="h-6 w-[1px] bg-gray-200"></div></>)}
@@ -912,13 +946,16 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
           </div>
         </div>
 
-        {/* 解析区域 (修复了这里的大括号语法错误) */}
         <div className={cn("space-y-4 transition-all duration-300", showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden')}>
           <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm"><div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div><p className="whitespace-pre-wrap text-gray-800 leading-relaxed">{mistake.reflection || "暂无复盘记录"}</p></div>
           <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm">
             <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
-            {mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/>}
-            <div className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{mistake.analysisText}</div>
+            {mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-4 border border-gray-100"/>}
+            <div className="text-gray-700 text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100">
+               <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
+                 {mistake.analysisText || "暂无文字解析"}
+               </ReactMarkdown>
+            </div>
           </div>
           <div className="h-20"></div>
         </div>
@@ -926,6 +963,7 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
     </div>
   );
 }
+
 // --- [新增] 多图上传组件 ---
 function MultiImageUpload({ images = [], onChange, max = 9 }) {
   const handleFile = async (e) => {
