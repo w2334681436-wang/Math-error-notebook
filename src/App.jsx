@@ -62,11 +62,38 @@ const cloneNodeRecursive = async (nodeId, newParentId) => {
   }
 };
 
-// ==========================================
-// 主入口 App
-// ==========================================
+// 在 App 组件内
 function App() {
   const [activeTab, setActiveTab] = useState('mistakes'); 
+  
+  // [新增] 科目管理逻辑
+  const subjects = useLiveQuery(() => db.subjects.toArray()) || [];
+  const [activeSubjectId, setActiveSubjectId] = useState(null);
+
+  // 初始化：如果没有选中科目且加载了科目列表，默认选中第一个
+  useEffect(() => {
+    if (!activeSubjectId && subjects.length > 0) {
+      setActiveSubjectId(subjects[0].id);
+    }
+  }, [subjects, activeSubjectId]);
+
+  // 初始化：如果是全新安装（无科目），自动创建默认科目
+  useEffect(() => {
+    const initDB = async () => {
+      if (await db.subjects.count() === 0) {
+        await db.subjects.bulkAdd([{ name: '数学' }, { name: '408' }]);
+      }
+    };
+    initDB();
+  }, []);
+
+  const handleAddSubject = async () => {
+    const name = prompt("请输入新科目名称（如：英语、政治）：");
+    if (name && name.trim()) {
+      const id = await db.subjects.add({ name: name.trim() });
+      setActiveSubjectId(id); // 自动切换到新科目
+    }
+  };
 
   const toggleFullScreen = () => {
     if (!document.fullscreenElement) {
@@ -78,19 +105,51 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 font-sans flex flex-col h-screen overflow-hidden">
-      {/* 顶部通栏 */}
-      <nav className="bg-white shadow-sm px-4 py-3 z-30 flex justify-between items-center border-b border-gray-200 shrink-0">
-        <h1 className="text-lg font-bold bg-gradient-to-r from-blue-700 to-blue-500 bg-clip-text text-transparent">
-          {activeTab === 'mistakes' ? '数学复盘' : '知识笔记'}
-        </h1>
-        <button onClick={toggleFullScreen} className="p-2 hover:bg-gray-100 rounded-full text-gray-500">
+      {/* 顶部通栏 - [修改] 支持科目切换 */}
+      <nav className="bg-white shadow-sm px-4 py-3 z-30 flex justify-between items-center border-b border-gray-200 shrink-0 gap-4">
+        {activeTab === 'mistakes' ? (
+          <div className="flex-1 flex items-center gap-2 overflow-x-auto no-scrollbar mask-gradient pr-2">
+            {subjects.map(sub => (
+              <button 
+                key={sub.id} 
+                onClick={() => setActiveSubjectId(sub.id)}
+                className={cn(
+                  "px-3 py-1.5 rounded-lg text-sm font-bold whitespace-nowrap transition-all flex-shrink-0",
+                  activeSubjectId === sub.id 
+                    ? "bg-blue-600 text-white shadow-md" 
+                    : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                )}
+              >
+                {sub.name}
+              </button>
+            ))}
+            <button 
+              onClick={handleAddSubject} 
+              className="p-1.5 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 flex-shrink-0"
+              title="添加新科目"
+            >
+              <Plus size={16} strokeWidth={3} />
+            </button>
+          </div>
+        ) : (
+          <h1 className="text-lg font-bold bg-gradient-to-r from-blue-700 to-blue-500 bg-clip-text text-transparent flex-1">
+            知识笔记
+          </h1>
+        )}
+        
+        <button onClick={toggleFullScreen} className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0">
           <Maximize size={20} />
         </button>
       </nav>
 
       {/* 主内容区域 */}
       <div className="flex-1 overflow-hidden relative">
-        {activeTab === 'mistakes' ? <MistakeSystem /> : <NoteSystem />}
+        {activeTab === 'mistakes' ? (
+          /* [修改] 传递当前科目ID */
+          <MistakeSystem subjectId={activeSubjectId} />
+        ) : (
+          <NoteSystem />
+        )}
       </div>
 
       {/* 底部导航栏 */}
@@ -108,17 +167,24 @@ function App() {
   );
 }
 
-// ==========================================
-// 模块一：错题本系统 (MistakeSystem) - [增强导航]
-// ==========================================
-function MistakeSystem() {
+// [修改] 接收 subjectId 参数
+function MistakeSystem({ subjectId }) {
   const [view, setView] = useState('list'); 
   const [currentMistakeId, setCurrentMistakeId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   
-  const mistakes = useLiveQuery(() => db.mistakes.orderBy('createdAt').reverse().toArray());
+  // [关键修改] 根据 subjectId 过滤错题
+  const mistakes = useLiveQuery(() => {
+    if (!subjectId) return [];
+    return db.mistakes
+      .where('subjectId').equals(subjectId)
+      .reverse()
+      .sortBy('createdAt');
+  }, [subjectId]);
+
   const currentMistake = useLiveQuery(() => currentMistakeId ? db.mistakes.get(currentMistakeId) : null, [currentMistakeId]);
 
+  // 下面逻辑基本不变，只是依赖项变了
   const filteredMistakes = useMemo(() => {
     if (!mistakes) return [];
     if (!searchQuery) return mistakes;
@@ -130,6 +196,7 @@ function MistakeSystem() {
     });
   }, [mistakes, searchQuery]);
 
+  // 上一题/下一题逻辑（保持不变，省略部分重复代码，直接使用之前的逻辑即可，核心是 filteredMistakes 已经变了）
   const handleNextMistake = () => {
     if (!mistakes || !currentMistakeId) return;
     const listToUse = searchQuery ? filteredMistakes : mistakes;
@@ -141,7 +208,6 @@ function MistakeSystem() {
     }
   };
 
-  // [新增] 上一题逻辑
   const handlePrevMistake = () => {
     if (!mistakes || !currentMistakeId) return;
     const listToUse = searchQuery ? filteredMistakes : mistakes;
@@ -160,13 +226,15 @@ function MistakeSystem() {
     return currentIndex !== -1 && currentIndex < listToUse.length - 1;
   }, [mistakes, filteredMistakes, currentMistakeId, searchQuery]);
 
-  // [新增] 是否有上一题
   const hasPrev = useMemo(() => {
     if (!mistakes || !currentMistakeId) return false;
     const listToUse = searchQuery ? filteredMistakes : mistakes;
     const currentIndex = listToUse.findIndex(m => m.id === currentMistakeId);
     return currentIndex > 0;
   }, [mistakes, filteredMistakes, currentMistakeId, searchQuery]);
+
+  // 如果没有选中科目（比如加载中），显示提示
+  if (!subjectId) return <div className="h-full flex items-center justify-center text-gray-400">正在加载科目...</div>;
 
   return (
     <div className="h-full overflow-y-auto bg-gray-100 pb-20">
@@ -176,23 +244,27 @@ function MistakeSystem() {
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Search size={18} className="text-gray-400" /></div>
               <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="搜索错题..." className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm transition"/>
             </div>
+            {/* [修改] 传递 subjectId 给 Form */}
             <MistakeList mistakes={filteredMistakes} onAdd={() => setView('add')} onOpen={(id) => { setCurrentMistakeId(id); setView('detail'); }} />
             <div className="text-center py-4 text-gray-400 text-xs font-mono opacity-60">Build: {APP_VERSION}</div>
         </div>
       )}
-      {view === 'add' && <MistakeForm mode="add" onFinish={() => setView('list')} onCancel={() => setView('list')} />}
+      {/* [修改] 传递 subjectId 给 Add Form */}
+      {view === 'add' && <MistakeForm mode="add" subjectId={subjectId} onFinish={() => setView('list')} onCancel={() => setView('list')} />}
+      
       {view === 'detail' && currentMistake && (
         <MistakeDetail 
           mistake={currentMistake} 
           hasNext={hasNext} 
           onNext={handleNextMistake} 
-          hasPrev={hasPrev} // [新增]
-          onPrev={handlePrevMistake} // [新增]
+          hasPrev={hasPrev} 
+          onPrev={handlePrevMistake} 
           onDelete={() => setView('list')} 
           onEdit={() => setView('edit')} 
           onBack={() => setView('list')} 
         />
       )}
+      
       {view === 'edit' && currentMistake && (
         <MistakeForm mode="edit" initialData={currentMistake} onFinish={() => setView('detail')} onCancel={() => setView('detail')} />
       )}
@@ -805,12 +877,11 @@ function MistakeList({ mistakes, onAdd, onOpen }) {
   );
 }
 
-// --- [替换] 错题表单：支持 Markdown/LaTeX 预览 ---
-function MistakeForm({ mode, initialData, onFinish, onCancel }) {
+// [修改] 接收 subjectId
+function MistakeForm({ mode, initialData, onFinish, onCancel, subjectId }) {
   const isEdit = mode === 'edit';
   const [title, setTitle] = useState(initialData?.title || '');
   
-  // 兼容旧数据
   const [qImages, setQImages] = useState(
     initialData?.questionImages || (initialData?.questionImg ? [initialData.questionImg] : [])
   );
@@ -819,8 +890,6 @@ function MistakeForm({ mode, initialData, onFinish, onCancel }) {
   const [reflection, setReflection] = useState(initialData?.reflection || '');
   const [analysisText, setAnalysisText] = useState(initialData?.analysisText || '');
   const [loading, setLoading] = useState(false);
-  
-  // [新增] 预览模式状态
   const [isPreviewMode, setIsPreviewMode] = useState(false);
 
   const handleSubmit = async () => {
@@ -835,13 +904,19 @@ function MistakeForm({ mode, initialData, onFinish, onCancel }) {
       reflection 
     };
     try {
-      if (isEdit) await db.mistakes.update(initialData.id, data);
-      else await db.mistakes.add({ ...data, createdAt: new Date() });
+      if (isEdit) {
+        // 编辑模式：subjectId 保持不变（已存在于 id 对应的记录中）
+        await db.mistakes.update(initialData.id, data);
+      } else {
+        // [修改] 新增模式：写入当前的 subjectId
+        await db.mistakes.add({ ...data, subjectId, createdAt: new Date() });
+      }
       onFinish();
-    } catch (e) { alert("保存失败"); } finally { setLoading(false); }
+    } catch (e) { alert("保存失败: " + e.message); } finally { setLoading(false); }
   };
 
   return (
+    // ... 保持原有 JSX 渲染代码不变，完全一样 ...
     <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl p-4 sm:p-6 pb-20 space-y-5 relative">
       <div className="flex justify-between items-center mb-2">
          <h2 className="text-lg font-bold text-gray-800">{isEdit ? '编辑错题' : '记录错题'}</h2>
@@ -866,7 +941,6 @@ function MistakeForm({ mode, initialData, onFinish, onCancel }) {
         <div className="border-t border-dashed pt-4">
           <div className="flex justify-between items-center mb-2">
              <label className="block text-sm font-bold text-gray-700">3. 答案解析 (支持 LaTeX)</label>
-             {/* [新增] 切换编辑/预览按钮 */}
              <div className="flex bg-gray-100 p-1 rounded-lg text-xs font-bold">
                 <button onClick={() => setIsPreviewMode(false)} className={cn("px-3 py-1 rounded-md transition-all", !isPreviewMode ? "bg-white shadow text-blue-600" : "text-gray-500")}>编辑</button>
                 <button onClick={() => setIsPreviewMode(true)} className={cn("px-3 py-1 rounded-md transition-all", isPreviewMode ? "bg-white shadow text-blue-600" : "text-gray-500")}>预览</button>
@@ -875,7 +949,6 @@ function MistakeForm({ mode, initialData, onFinish, onCancel }) {
           
           <ImageUpload value={aImg} onChange={setAImg} isAnalysis />
           
-          {/* [新增] 核心逻辑：如果是预览模式，调用 ReactMarkdown 渲染 */}
           {isPreviewMode ? (
             <div className="w-full mt-3 p-4 bg-gray-50 border border-gray-200 rounded-xl min-h-[160px] prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2">
                {analysisText ? (
