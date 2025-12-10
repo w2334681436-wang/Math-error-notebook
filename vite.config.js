@@ -6,20 +6,20 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate', // 核心：检测到新代码自动更新
+      registerType: 'autoUpdate',
       manifest: {
-        name: '数学复盘',
-        short_name: '数学复盘',
-        description: '考研数学错题沉浸式复习',
+        name: '错题本',      // [修改] 名称改为通用
+        short_name: '错题本', // [修改]
+        description: '全科目错题沉浸式复盘工具', // [修改]
         theme_color: '#ffffff',
         background_color: "#ffffff",
-        display: 'standalone', // 核心：这会让它像 App 一样没有地址栏
+        display: 'standalone',
         orientation: 'portrait',
         start_url: "/",
         icons: [
           {
             src: 'icon.svg',
-            sizes: '192x192', // SVG 可以自适应所有尺寸
+            sizes: '192x192',
             type: 'image/svg+xml',
             purpose: 'any maskable'
           },
