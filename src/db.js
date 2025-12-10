@@ -8,16 +8,21 @@ db.version(1).stores({
 });
 
 // 版本 2: 增加笔记系统
-// notes表字段:
-// id: 唯一ID
-// parentId: 父级ID (用于层级)
-// title: 标题
-// type: 'folder' | 'file' (文件夹或知识点)
-// content: 知识点内容 (图片数组)
-// tags: 标签数组
-// order: 排序权重
-// createdAt: 创建时间
 db.version(2).stores({
   mistakes: '++id, title, createdAt',
   notes: '++id, parentId, title, type, *tags, order' 
+});
+
+// [新增] 版本 3: 增加多科目支持
+db.version(3).stores({
+  mistakes: '++id, title, createdAt, subjectId', // 增加 subjectId 索引
+  notes: '++id, parentId, title, type, *tags, order',
+  subjects: '++id, name' // 新增科目表
+}).upgrade(async tx => {
+  // 数据迁移逻辑：如果是老用户升级，创建默认科目，并将旧错题归类到"数学"
+  const mathId = await tx.table('subjects').add({ name: '数学' });
+  await tx.table('subjects').add({ name: '408' }); // 预置 408
+  
+  // 将所有旧错题的 subjectId 设置为数学的 ID
+  await tx.table('mistakes').toCollection().modify({ subjectId: mathId });
 });
