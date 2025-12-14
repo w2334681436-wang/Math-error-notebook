@@ -836,7 +836,7 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
   );
 }
 
-// --- [更新] 错题列表：显示第一张图 + 数量角标 ---
+// --- [修改版] 错题列表：显示熟练度状态 ---
 function MistakeList({ mistakes, onAdd, onOpen }) {
   if (!mistakes) return <div className="text-center mt-20 text-gray-400">加载数据中...</div>;
   if (mistakes.length === 0) return <div className="flex flex-col items-center justify-center mt-10 text-gray-400 p-4"><div className="mb-4 p-4 bg-gray-200 rounded-full">📝</div><p className="mb-6 font-medium">没有找到相关错题</p><button onClick={onAdd} className="bg-blue-600 text-white px-6 py-2 rounded-full font-bold shadow-lg hover:bg-blue-700 transition text-sm">添加错题</button></div>;
@@ -853,7 +853,20 @@ function MistakeList({ mistakes, onAdd, onOpen }) {
           <div key={item.id} onClick={() => onOpen(item.id)} className="bg-white rounded-xl shadow-sm border border-gray-200 active:scale-[0.98] transition-transform cursor-pointer overflow-hidden flex h-36">
             <div className="w-[35%] p-3 flex flex-col justify-between border-r border-gray-100 bg-white z-10">
               <div><h3 className="font-bold text-gray-800 text-sm line-clamp-3 leading-relaxed">{item.title || "未命名"}</h3></div>
-              <div className="space-y-1"><span className={cn("text-[10px] px-2 py-0.5 rounded-full font-medium border", item.reflection ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-gray-100 text-gray-400 border-gray-200')}>{item.reflection ? '已复盘' : '待复盘'}</span><div className="text-[10px] text-gray-400 font-medium pl-0.5">{new Date(item.createdAt).toLocaleDateString(undefined, {month:'2-digit', day:'2-digit'})}</div></div>
+              <div className="space-y-1">
+                <div className="flex flex-wrap gap-1">
+                    <span className={cn("text-[10px] px-2 py-0.5 rounded-full font-medium border", item.reflection ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-gray-100 text-gray-400 border-gray-200')}>
+                        {item.reflection ? '已复盘' : '待复盘'}
+                    </span>
+                    {/* [新增] 熟练度显示 */}
+                    {item.isMastered && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-green-50 text-green-600 border-green-100 flex items-center gap-0.5">
+                            <CheckCircle2 size={10} /> 已掌握
+                        </span>
+                    )}
+                </div>
+                <div className="text-[10px] text-gray-400 font-medium pl-0.5">{new Date(item.createdAt).toLocaleDateString(undefined, {month:'2-digit', day:'2-digit'})}</div>
+              </div>
             </div>
             <div className="flex-1 relative bg-gray-50 h-full group">
               {firstImg ? (
@@ -984,7 +997,7 @@ function ImageUpload({ value, onChange, isAnalysis }) {
   )
 }
 
-// --- [修复版] 错题详情：正确渲染 LaTeX ---
+// --- [修改版] 错题详情：增加“已熟练”按钮 ---
 function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, hasPrev, onBack }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
   
@@ -998,6 +1011,11 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
     } 
   }
 
+  // [新增] 切换熟练掌握状态
+  const toggleMastered = async () => {
+    await db.mistakes.update(mistake.id, { isMastered: !mistake.isMastered });
+  };
+
   // 兼容多图和单图
   const images = mistake.questionImages || (mistake.questionImg ? [mistake.questionImg] : []);
 
@@ -1008,7 +1026,11 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
            <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600 transition" title="返回列表"><Home size={20}/></button>
            <div>
              <h2 className="font-bold text-lg text-gray-900 leading-snug">{mistake.title || "题目详情"}</h2>
-             <p className="text-xs text-gray-400 mt-1">{new Date(mistake.createdAt).toLocaleString()}</p>
+             <div className="flex items-center gap-2 mt-1">
+                <p className="text-xs text-gray-400">{new Date(mistake.createdAt).toLocaleString()}</p>
+                {/* 顶部也显示一个小标记 */}
+                {mistake.isMastered && <span className="text-[10px] bg-green-100 text-green-700 px-1.5 rounded border border-green-200">已掌握</span>}
+             </div>
            </div>
         </div>
         <button onClick={onEdit} className="p-2 bg-gray-50 text-blue-600 rounded-lg hover:bg-blue-50"><Edit size={18} /></button>
@@ -1026,14 +1048,29 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
           {images.length === 0 && <div className="p-8 text-center text-gray-300 bg-gray-50 rounded-xl">无图片</div>}
         </div>
 
-        {/* 底部悬浮栏 */}
+        {/* 底部悬浮栏 - [修改] 增加熟练度按钮 */}
         <div className="fixed bottom-20 w-full max-w-3xl left-1/2 -translate-x-1/2 px-4 z-20 flex items-center justify-center pointer-events-none">
-          <div className="bg-white/95 backdrop-blur-md p-2 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.15)] border border-gray-200 flex items-center gap-3 pointer-events-auto">
-             {hasPrev && (<><button onClick={onPrev} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition" title="上一题"><ChevronLeft size={24} /></button><div className="h-6 w-[1px] bg-gray-200"></div></>)}
-             <button onClick={() => setShowAnalysis(!showAnalysis)} className={cn("flex items-center gap-2 px-6 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap", showAnalysis ? 'bg-gray-100 text-gray-700' : 'bg-green-600 text-white shadow-lg')}>{showAnalysis ? <><EyeOff size={18}/> 遮住答案</> : <><Eye size={18}/> 查看解析</>}</button>
-             {hasNext && (<><div className="h-6 w-[1px] bg-gray-200"></div><button onClick={onNext} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition" title="下一题"><ChevronRight size={24} /></button></>)}
-             <div className="h-6 w-[1px] bg-gray-200"></div>
-             <button onClick={handleDelete} className="p-3 rounded-full text-red-400 hover:bg-red-50 transition"><Trash2 size={20} /></button>
+          <div className="bg-white/95 backdrop-blur-md p-2 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.15)] border border-gray-200 flex items-center gap-2 pointer-events-auto overflow-x-auto no-scrollbar max-w-full">
+             {hasPrev && (<><button onClick={onPrev} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition shrink-0" title="上一题"><ChevronLeft size={24} /></button><div className="h-6 w-[1px] bg-gray-200 shrink-0"></div></>)}
+             
+             {/* [新增] 熟练度按钮 */}
+             <button 
+                onClick={toggleMastered}
+                className={cn(
+                  "flex items-center gap-1 px-4 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap shrink-0",
+                  mistake.isMastered 
+                    ? "bg-green-50 text-green-600 border border-green-200" 
+                    : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                )}
+             >
+                {mistake.isMastered ? <><CheckCircle2 size={18}/> 已掌握</> : <><Circle size={18}/> 标记掌握</>}
+             </button>
+
+             <button onClick={() => setShowAnalysis(!showAnalysis)} className={cn("flex items-center gap-2 px-6 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap shrink-0", showAnalysis ? 'bg-gray-100 text-gray-700' : 'bg-blue-600 text-white shadow-lg')}>{showAnalysis ? <><EyeOff size={18}/> 遮住答案</> : <><Eye size={18}/> 查看解析</>}</button>
+             
+             {hasNext && (<><div className="h-6 w-[1px] bg-gray-200 shrink-0"></div><button onClick={onNext} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition shrink-0" title="下一题"><ChevronRight size={24} /></button></>)}
+             <div className="h-6 w-[1px] bg-gray-200 shrink-0"></div>
+             <button onClick={handleDelete} className="p-3 rounded-full text-red-400 hover:bg-red-50 transition shrink-0"><Trash2 size={20} /></button>
           </div>
         </div>
 
@@ -1044,7 +1081,6 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
             <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
             {mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/>}
             
-            {/* [关键修复] 这里改用 ReactMarkdown 渲染，之前是直接输出文本 */}
             <div className="text-gray-700 text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100">
                <ReactMarkdown 
                  remarkPlugins={[remarkGfm, remarkMath]} 
