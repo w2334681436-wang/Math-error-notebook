@@ -21,6 +21,9 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 
 // --- 工具函数 ---
+
+
+
 function cn(...inputs) { return twMerge(clsx(inputs)); }
 const fileToBase64 = (file) => new Promise((resolve, reject) => {
   const reader = new FileReader();
@@ -28,6 +31,13 @@ const fileToBase64 = (file) => new Promise((resolve, reject) => {
   reader.onload = () => resolve(reader.result);
   reader.onerror = error => reject(error);
 });
+
+const getReviewCount = (logs) => {
+  if (!logs || !Array.isArray(logs)) return 0;
+  const uniqueDays = new Set(logs.map(ts => new Date(ts).toDateString()));
+  return uniqueDays.size;
+};
+
 const generateId = () => Math.random().toString(36).substr(2, 9);
 const APP_VERSION = "v3.1.0 (稳定修复版)";
 
@@ -836,7 +846,7 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
   );
 }
 
-// --- [修改版] 错题列表：显示熟练度状态 ---
+// --- [修改版] 错题列表：显示复盘次数和熟练度 ---
 function MistakeList({ mistakes, onAdd, onOpen }) {
   if (!mistakes) return <div className="text-center mt-20 text-gray-400">加载数据中...</div>;
   if (mistakes.length === 0) return <div className="flex flex-col items-center justify-center mt-10 text-gray-400 p-4"><div className="mb-4 p-4 bg-gray-200 rounded-full">📝</div><p className="mb-6 font-medium">没有找到相关错题</p><button onClick={onAdd} className="bg-blue-600 text-white px-6 py-2 rounded-full font-bold shadow-lg hover:bg-blue-700 transition text-sm">添加错题</button></div>;
@@ -848,6 +858,8 @@ function MistakeList({ mistakes, onAdd, onOpen }) {
         const images = item.questionImages || (item.questionImg ? [item.questionImg] : []);
         const firstImg = images[0];
         const count = images.length;
+        // [新增] 计算复盘次数
+        const reviewCount = getReviewCount(item.reviewLogs);
 
         return (
           <div key={item.id} onClick={() => onOpen(item.id)} className="bg-white rounded-xl shadow-sm border border-gray-200 active:scale-[0.98] transition-transform cursor-pointer overflow-hidden flex h-36">
@@ -858,7 +870,13 @@ function MistakeList({ mistakes, onAdd, onOpen }) {
                     <span className={cn("text-[10px] px-2 py-0.5 rounded-full font-medium border", item.reflection ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-gray-100 text-gray-400 border-gray-200')}>
                         {item.reflection ? '已复盘' : '待复盘'}
                     </span>
-                    {/* [新增] 熟练度显示 */}
+                    {/* [新增] 复盘次数显示 */}
+                    {reviewCount > 0 && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-indigo-50 text-indigo-600 border-indigo-100 flex items-center gap-0.5">
+                        <Calendar size={10} /> {reviewCount}次
+                      </span>
+                    )}
+                    {/* 熟练度显示 */}
                     {item.isMastered && (
                         <span className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-green-50 text-green-600 border-green-100 flex items-center gap-0.5">
                             <CheckCircle2 size={10} /> 已掌握
@@ -997,12 +1015,29 @@ function ImageUpload({ value, onChange, isAnalysis }) {
   )
 }
 
-// --- [修改版] 错题详情：增加“已熟练”按钮 ---
+// --- [修改版] 错题详情：增加复盘自动记录 ---
 function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, hasPrev, onBack }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
   
   // 切换题目时重置解析显示状态
   useEffect(() => { setShowAnalysis(false); }, [mistake.id]);
+
+  // [新增] 自动记录复盘行为 (查看解析时触发)
+  useEffect(() => {
+    if (showAnalysis) {
+      const today = new Date().toDateString();
+      const logs = mistake.reviewLogs || [];
+      // 获取最后一次复盘的时间（如果存在）
+      const lastLogDate = logs.length > 0 ? new Date(logs[logs.length - 1]).toDateString() : null;
+      
+      // 如果最后一次复盘不是今天，则追加记录
+      if (lastLogDate !== today) {
+        db.mistakes.update(mistake.id, {
+          reviewLogs: [...logs, Date.now()]
+        });
+      }
+    }
+  }, [showAnalysis, mistake]);
   
   const handleDelete = async () => { 
     if(confirm('删除后无法恢复，确定吗？')) { 
@@ -1011,7 +1046,7 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
     } 
   }
 
-  // [新增] 切换熟练掌握状态
+  // 切换熟练掌握状态
   const toggleMastered = async () => {
     await db.mistakes.update(mistake.id, { isMastered: !mistake.isMastered });
   };
@@ -1028,8 +1063,11 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
              <h2 className="font-bold text-lg text-gray-900 leading-snug">{mistake.title || "题目详情"}</h2>
              <div className="flex items-center gap-2 mt-1">
                 <p className="text-xs text-gray-400">{new Date(mistake.createdAt).toLocaleString()}</p>
-                {/* 顶部也显示一个小标记 */}
                 {mistake.isMastered && <span className="text-[10px] bg-green-100 text-green-700 px-1.5 rounded border border-green-200">已掌握</span>}
+                {/* [新增] 详情页也显示复盘统计 */}
+                <span className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 rounded border border-indigo-100 flex items-center gap-1">
+                   <Calendar size={10} /> 复盘 {getReviewCount(mistake.reviewLogs)} 天
+                </span>
              </div>
            </div>
         </div>
@@ -1048,12 +1086,11 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
           {images.length === 0 && <div className="p-8 text-center text-gray-300 bg-gray-50 rounded-xl">无图片</div>}
         </div>
 
-        {/* 底部悬浮栏 - [修改] 增加熟练度按钮 */}
+        {/* 底部悬浮栏 */}
         <div className="fixed bottom-20 w-full max-w-3xl left-1/2 -translate-x-1/2 px-4 z-20 flex items-center justify-center pointer-events-none">
           <div className="bg-white/95 backdrop-blur-md p-2 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.15)] border border-gray-200 flex items-center gap-2 pointer-events-auto overflow-x-auto no-scrollbar max-w-full">
              {hasPrev && (<><button onClick={onPrev} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition shrink-0" title="上一题"><ChevronLeft size={24} /></button><div className="h-6 w-[1px] bg-gray-200 shrink-0"></div></>)}
              
-             {/* [新增] 熟练度按钮 */}
              <button 
                 onClick={toggleMastered}
                 className={cn(
