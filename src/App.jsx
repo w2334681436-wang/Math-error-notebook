@@ -39,7 +39,7 @@ const getReviewCount = (logs) => {
 };
 
 const generateId = () => Math.random().toString(36).substr(2, 9);
-const APP_VERSION = "v3.1.0 (稳定修复版)";
+const APP_VERSION = "v3.4.0 (稳定修复版)";
 
 // [原有] 递归删除
 const deleteNoteRecursive = async (nodeId) => {
