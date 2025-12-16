@@ -13,7 +13,14 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
+      
       registerType: 'autoUpdate',
+      workbox: {
+    // 强制清理旧缓存，确保每次部署都更新
+    cleanupOutdatedCaches: true,
+    skipWaiting: true,
+    clientsClaim: true,
+  },
       manifest: {
         name: '错题本',
         short_name: '错题本',
