@@ -765,13 +765,17 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
   );
 }
 
-// --- [更新] 知识点编辑器：增加返回按钮 ---
+// --- [更新] 知识点编辑器：支持 Markdown/LaTeX 文本 + 图片 ---
 function NoteEditor({ nodeId, onBack, onNavigate }) {
   const note = useLiveQuery(() => db.notes.get(nodeId), [nodeId]);
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState('');
   const [newTag, setNewTag] = useState('');
 
+  // [新增] 文本编辑相关状态
+  const [text, setText] = useState('');
+  const [isPreview, setIsPreview] = useState(true); // 默认开启预览模式，方便查看
+  
   const siblings = useLiveQuery(async () => {
     if (!note) return [];
     const items = await db.notes.where('parentId').equals(note.parentId).toArray();
@@ -785,10 +789,30 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
     return { prevId: idx > 0 ? siblings[idx - 1].id : null, nextId: idx < siblings.length - 1 ? siblings[idx + 1].id : null };
   }, [siblings, nodeId]);
 
-  useEffect(() => { if(note) setTitle(note.title); }, [note]);
+  // [修改] 初始化数据，加载 title 和 text
+  useEffect(() => { 
+    if(note) {
+        setTitle(note.title); 
+        // 只有当 text 有值且当前不在编辑状态时才更新，防止打字时光标跳动
+        // 这里简单处理：切换笔记时更新 text
+        setText(note.text || '');
+        
+        // 如果没有内容，默认进入编辑模式；有内容则默认预览
+        if (note.text === undefined || note.text === '') {
+            setIsPreview(false);
+        }
+    } 
+  }, [note?.id]); // 依赖改为 note.id，避免每次输入触发重置
+
   if (!note) return <div className="p-10 text-center">加载中...</div>;
 
   const handleUpdate = (updates) => db.notes.update(nodeId, updates);
+  
+  // [新增] 保存文本内容
+  const handleTextSave = () => {
+    handleUpdate({ text });
+  };
+
   const handleAddImage = async (e) => { const file = e.target.files[0]; if (!file) return; const base64 = await fileToBase64(file); const newContent = [...(note.content || []), { id: generateId(), src: base64, desc: '' }]; handleUpdate({ content: newContent }); };
   const handleDeleteImage = (imgId) => { handleUpdate({ content: note.content.filter(c => c.id !== imgId) }); }
   const handleAddTag = () => { if(!newTag.trim()) return; const tags = [...(note.tags || [])]; if(!tags.includes(newTag.trim())) { tags.push(newTag.trim()); handleUpdate({ tags }); } setNewTag(''); }
@@ -797,9 +821,9 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
 
   return (
     <div className="flex flex-col h-full bg-white">
+      {/* 顶部导航栏 */}
       <div className="p-4 border-b border-gray-100 flex justify-between items-center sticky top-0 bg-white z-10">
         <div className="flex items-center gap-3 flex-1 mr-4 overflow-hidden">
-           {/* [新增] 返回上一级按钮 */}
            <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500" title="返回上一级">
              <ArrowUpLeft size={20}/>
            </button>
@@ -832,6 +856,47 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
       )}
       
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
+         {/* [新增] Markdown 文本编辑/预览区域 */}
+         <div className="space-y-2">
+            <div className="flex justify-between items-center">
+               <label className="text-sm font-bold text-gray-700 flex items-center gap-2">
+                 <FileText size={16}/> 笔记内容
+               </label>
+               <div className="flex bg-gray-100 p-1 rounded-lg text-xs font-bold">
+                  <button onClick={() => setIsPreview(false)} className={cn("px-3 py-1 rounded-md transition-all", !isPreview ? "bg-white shadow text-blue-600" : "text-gray-500")}>编辑</button>
+                  <button onClick={() => { setIsPreview(true); handleTextSave(); }} className={cn("px-3 py-1 rounded-md transition-all", isPreview ? "bg-white shadow text-blue-600" : "text-gray-500")}>预览</button>
+               </div>
+            </div>
+
+            {isPreview ? (
+              <div 
+                  className="w-full p-4 bg-white border border-gray-200 rounded-xl min-h-[120px] prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100 cursor-text hover:border-blue-300 transition"
+                  onClick={() => setIsPreview(false)} // 点击即进入编辑模式，体验流畅
+                  title="点击编辑"
+              >
+                 {text ? (
+                   <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
+                     {text}
+                   </ReactMarkdown>
+                 ) : (
+                   <span className="text-gray-400 italic flex items-center gap-1"><Edit size={14}/> 点击此处开始编写笔记 (支持 Markdown & LaTeX)...</span>
+                 )}
+              </div>
+            ) : (
+              <textarea 
+                value={text} 
+                onChange={e => setText(e.target.value)} 
+                onBlur={handleTextSave} // 失去焦点自动保存
+                className="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl min-h-[300px] text-sm outline-none focus:border-blue-500 resize-y font-mono leading-relaxed" 
+                placeholder="# 标题&#10;这是正文内容，支持 **加粗** 和 $E=mc^2$ 公式。&#10;&#10;```js&#10;console.log('代码高亮');&#10;```"
+                autoFocus
+              ></textarea>
+            )}
+         </div>
+
+         {/* 原有的图片列表 (保留作为补充资料/截图区域) */}
+         {note.content?.length > 0 && <div className="border-t border-gray-100 my-4"></div>}
+         
          {note.content?.map((item, idx) => (
             <div key={item.id} className="group relative bg-gray-50 rounded-xl p-2 border border-gray-100">
                 <img src={item.src} className="w-full rounded-lg" />
@@ -839,7 +904,12 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
                 <textarea placeholder="给这张图写点备注..." className="w-full bg-transparent text-sm mt-2 p-2 outline-none resize-none h-10 focus:bg-white focus:h-20 transition-all rounded" defaultValue={item.desc} onBlur={(e) => { const newContent = [...note.content]; newContent[idx].desc = e.target.value; handleUpdate({ content: newContent }); }}/>
             </div>
          ))}
-         <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 flex flex-col items-center justify-center text-gray-400 hover:bg-gray-50 hover:border-indigo-200 transition cursor-pointer relative"><ImageIcon size={32} className="mb-2"/><span className="text-sm font-bold">添加知识点截图</span><input type="file" accept="image/*" onChange={handleAddImage} className="absolute inset-0 opacity-0 cursor-pointer"/></div>
+         
+         <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 flex flex-col items-center justify-center text-gray-400 hover:bg-gray-50 hover:border-indigo-200 transition cursor-pointer relative">
+            <ImageIcon size={32} className="mb-2"/>
+            <span className="text-sm font-bold">添加补充截图</span>
+            <input type="file" accept="image/*" onChange={handleAddImage} className="absolute inset-0 opacity-0 cursor-pointer"/>
+         </div>
          <div className="h-20"></div>
       </div>
     </div>
