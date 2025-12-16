@@ -9,5 +9,14 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      // 注册手动版 Service Worker
+      if ('serviceWorker' in navigator) {
+          // 确保在生产环境或本地预览时注册
+          navigator.serviceWorker.register('/service-worker.js')
+            .then(reg => console.log('SW Registered!', reg))
+            .catch(error => console.error('SW Error:', error));
+      }
+    </script>
   </body>
 </html>
