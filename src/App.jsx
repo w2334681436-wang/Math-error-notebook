@@ -1076,8 +1076,9 @@ function MistakeForm({ mode, initialData, onFinish, onCancel, subjectId }) {
     initialData?.questionImages || (initialData?.questionImg ? [initialData.questionImg] : [])
   );
   
-  const [aImg, setAImg] = useState(initialData?.analysisImg || null);
-  const [reflection, setReflection] = useState(initialData?.reflection || '');
+const [aImages, setAImages] = useState(
+    initialData?.analysisImages || (initialData?.analysisImg ? [initialData.analysisImg] : [])
+  );  const [reflection, setReflection] = useState(initialData?.reflection || '');
   const [analysisText, setAnalysisText] = useState(initialData?.analysisText || '');
   const [loading, setLoading] = useState(false);
   const [isPreviewMode, setIsPreviewMode] = useState(false);
@@ -1089,7 +1090,8 @@ function MistakeForm({ mode, initialData, onFinish, onCancel, subjectId }) {
       title, 
       questionImages: qImages, 
       questionImg: qImages[0], 
-      analysisImg: aImg, 
+     analysisImages: aImages,      // 新增：保存多张解析图
+      analysisImg: aImages[0] || null, // 兼容：保留首图字段，防止旧逻辑报错
       analysisText, 
       reflection 
     };
@@ -1137,7 +1139,7 @@ function MistakeForm({ mode, initialData, onFinish, onCancel, subjectId }) {
              </div>
           </div>
           
-          <ImageUpload value={aImg} onChange={setAImg} isAnalysis />
+<MultiImageUpload images={aImages} onChange={setAImages} />
           
           {isPreviewMode ? (
             <div className="w-full mt-3 p-4 bg-gray-50 border border-gray-200 rounded-xl min-h-[160px] prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2">
@@ -1274,8 +1276,21 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
         <div className={cn("space-y-4 transition-all duration-300", showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden')}>
           <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm"><div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div><p className="whitespace-pre-wrap text-gray-800 leading-relaxed">{mistake.reflection || "暂无复盘记录"}</p></div>
           <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm">
-            <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
-            {mistake.analysisImg && <img src={mistake.analysisImg} className="w-full rounded-lg mb-2 border border-gray-100"/>}
+           <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
+            {/* [修改] 解析图片改为多图列表展示 */}
+            <div className="space-y-2 mb-3">
+              {(mistake.analysisImages || (mistake.analysisImg ? [mistake.analysisImg] : [])).map((img, idx) => (
+                <div key={idx} className="rounded-lg overflow-hidden border border-gray-100 relative shadow-sm">
+                  <img src={img} alt={`解析图片 ${idx+1}`} className="w-full" />
+                  {/* 如果有多张图，显示序号角标 */}
+                  {(mistake.analysisImages?.length > 1 || (!mistake.analysisImages && mistake.analysisImg)) && (
+                    <div className="absolute top-2 left-2 bg-green-600/80 text-white text-xs px-2 py-0.5 rounded-full backdrop-blur-md">
+                      {idx + 1}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
             
             <div className="text-gray-700 text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100">
                <ReactMarkdown 
