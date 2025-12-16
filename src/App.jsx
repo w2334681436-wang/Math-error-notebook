@@ -5,9 +5,10 @@ import {
   Plus, Maximize, ArrowLeft, Eye, EyeOff, Trash2, Save, Edit, X, Search, ChevronRight, 
   Folder, FileText, ChevronDown, ChevronRight as ChevronRightIcon, GripVertical, Image as ImageIcon, Tag, 
   ArrowUpLeft, ArrowRightSquare, PanelLeftClose, PanelLeftOpen, 
-  MoreVertical, // [关键] 菜单按钮图标
+  MoreVertical, 
   CheckSquare, Copy, Scissors, Clipboard, CheckCircle2, Circle,
-  Home, ChevronLeft, ArrowDownUp, Calendar
+  Home, ChevronLeft, ArrowDownUp, Calendar,
+  Download, UploadCloud
 } from 'lucide-react';
 
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay, useDndMonitor, pointerWithin } from '@dnd-kit/core';
@@ -105,6 +106,79 @@ function App() {
     }
   };
 
+  // [新增] 导出备份数据
+  const handleExport = async () => {
+    try {
+      const mistakes = await db.mistakes.toArray();
+      const notes = await db.notes.toArray();
+      const subjects = await db.subjects.toArray();
+      
+      const backupData = {
+        version: 1,
+        date: new Date().toISOString(),
+        data: { mistakes, notes, subjects }
+      };
+
+      const blob = new Blob([JSON.stringify(backupData)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      // 文件名包含日期，如: MathNotebook_Backup_2023-12-15.json
+      link.download = `MathNotebook_Backup_${new Date().toISOString().slice(0,10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      alert('导出失败: ' + error.message);
+    }
+  };
+
+  // [新增] 导入备份数据
+  const handleImport = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (!confirm('⚠️ 警告：导入将【清空并覆盖】当前所有数据！\n\n确定要继续吗？建议先导出当前数据作为备份。')) {
+      e.target.value = ''; // 清空选择，允许重复选择同一文件
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const backup = JSON.parse(event.target.result);
+        // 简单的数据完整性检查
+        if (!backup.data || !backup.data.mistakes) throw new Error('文件格式错误或数据损坏');
+
+        await db.transaction('rw', db.mistakes, db.notes, db.subjects, async () => {
+          // 1. 清空现有数据
+          await db.mistakes.clear();
+          await db.notes.clear();
+          await db.subjects.clear();
+
+          // 2. 写入备份数据
+          await db.mistakes.bulkAdd(backup.data.mistakes);
+          await db.notes.bulkAdd(backup.data.notes);
+          
+          if (backup.data.subjects && backup.data.subjects.length > 0) {
+            await db.subjects.bulkAdd(backup.data.subjects);
+          } else {
+             // 兼容旧版数据：如果没有科目表，重建默认科目
+             await db.subjects.bulkAdd([{ name: '数学' }, { name: '408' }]);
+          }
+        });
+
+        alert('✅ 数据导入成功！页面将自动刷新。');
+        window.location.reload();
+      } catch (error) {
+        console.error(error);
+        alert('❌ 导入失败: ' + error.message);
+      }
+    };
+    reader.readAsText(file);
+  };
+
   const toggleFullScreen = () => {
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch(e => console.log(e));
@@ -115,7 +189,7 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 font-sans flex flex-col h-screen overflow-hidden">
-      {/* 顶部通栏 - [修改] 支持科目切换 */}
+    {/* 顶部通栏 - [修改] 增加导出导入按钮 */}
       <nav className="bg-white shadow-sm px-4 py-3 z-30 flex justify-between items-center border-b border-gray-200 shrink-0 gap-4">
         {activeTab === 'mistakes' ? (
           <div className="flex-1 flex items-center gap-2 overflow-x-auto no-scrollbar mask-gradient pr-2">
@@ -147,9 +221,24 @@ function App() {
           </h1>
         )}
         
-        <button onClick={toggleFullScreen} className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0">
-          <Maximize size={20} />
-        </button>
+        {/* [新增] 右侧功能区：导出、导入、全屏 */}
+        <div className="flex items-center gap-1">
+          <button onClick={handleExport} className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0" title="导出备份">
+            <Download size={20} />
+          </button>
+          
+          <label className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0 cursor-pointer" title="导入备份">
+            <UploadCloud size={20} />
+            {/* 隐藏的文件输入框，选中文件后立即触发 handleImport */}
+            <input type="file" accept=".json" onChange={handleImport} className="hidden" />
+          </label>
+          
+          <div className="w-[1px] h-4 bg-gray-200 mx-1"></div>
+          
+          <button onClick={toggleFullScreen} className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0" title="全屏">
+            <Maximize size={20} />
+          </button>
+        </div>
       </nav>
 
       {/* 主内容区域 */}
