@@ -3,10 +3,10 @@
   "private": true,
   "version": "3.4.0",
   "type": "module",
-  "scripts": {
+ "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
+    "build": "node update-sw.js && vite build",  
+    "lint": "eslint ... (保持原样)",
     "preview": "vite preview"
   },
   "dependencies": {
