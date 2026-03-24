@@ -517,7 +517,14 @@ function NoteSystem() {
               clipboardCount={clipboard.items.length}
             />
           ) : (
-            <NoteEditor nodeId={selectedNodeId} onNavigate={setSelectedNodeId} onBack={() => setMobileMenuOpen(true)} />
+            <NoteEditor 
+               nodeId={selectedNodeId} 
+               onNavigate={setSelectedNodeId} 
+               onBack={() => {
+                 setSelectedNodeId(selectedNode.parentId === 'root' ? null : selectedNode.parentId);
+                 if (selectedNode.parentId === 'root' && window.innerWidth < 768) setMobileMenuOpen(true);
+               }} 
+            />
           )
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-gray-300 select-none"><Folder size={64} className="mb-4 opacity-20"/><p className="mt-2">从左侧选择知识点或文件夹</p></div>
