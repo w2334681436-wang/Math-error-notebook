@@ -966,9 +966,7 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
 
             {isPreview ? (
               <div 
-    className="w-full p-4 bg-white border border-gray-200 rounded-xl min-h-[120px] prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100 prose-pre:text-gray-800 prose-code:text-gray-800 cursor-text hover:border-blue-300 transition"
-    onClick={() => setIsPreview(false)} // 点击即进入编辑模式，体验流畅
-    title="点击编辑"
+    className="w-full p-4 bg-white border border-gray-200 rounded-xl min-h-[120px] prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100 prose-pre:text-gray-800 prose-code:text-gray-800 transition"
 >
                  {text ? (
                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
