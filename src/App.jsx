@@ -87,6 +87,7 @@ function App() {
   // [新增] 科目管理逻辑
   const subjects = useLiveQuery(() => db.subjects.toArray()) || [];
   const [activeSubjectId, setActiveSubjectId] = useState(null);
+  const [mistakeView, setMistakeView] = useState('list');
 
   // 初始化：如果没有选中科目且加载了科目列表，默认选中第一个
   useEffect(() => {
@@ -124,7 +125,9 @@ useEffect(() => {
     const name = prompt("请输入新科目名称（如：英语、政治）：");
     if (name && name.trim()) {
       const id = await db.subjects.add({ name: name.trim() });
-      setActiveSubjectId(id); // 自动切换到新科目
+      setActiveTab('mistakes');
+setMistakeView('list');
+setActiveSubjectId(id); // 自动切换到新科目
     }
   };
 
@@ -462,7 +465,11 @@ const handleImport = async (e) => {
             {subjects.map(sub => (
               <button 
                 key={sub.id} 
-                onClick={() => setActiveSubjectId(sub.id)}
+                onClick={() => {
+  setActiveTab('mistakes');
+  setMistakeView('list');
+  setActiveSubjectId(sub.id);
+}}
                 className={cn(
                   "px-3 py-1.5 rounded-lg text-sm font-bold whitespace-nowrap transition-all flex-shrink-0",
                   activeSubjectId === sub.id 
@@ -489,6 +496,27 @@ const handleImport = async (e) => {
         
         {/* [新增] 右侧功能区：导出、导入、全屏 */}
         <div className="flex items-center gap-1">
+          {activeTab === 'mistakes' && mistakeView !== 'list' && (
+  <button
+    onClick={() => setMistakeView('list')}
+    className="p-2 hover:bg-gray-100 rounded-full text-gray-600 shrink-0 flex items-center gap-1"
+    title="返回错题列表"
+  >
+    <Home size={20} />
+    <span className="hidden sm:inline text-xs font-bold">主页</span>
+  </button>
+)}
+
+{activeTab === 'mistakes' && (mistakeView === 'add' || mistakeView === 'edit') && (
+  <button
+    onClick={() => window.dispatchEvent(new Event('mistake-form-save'))}
+    className="px-3 py-2 bg-blue-600 text-white rounded-full shrink-0 flex items-center gap-1 text-xs font-bold shadow-sm hover:bg-blue-700"
+    title="保存错题"
+  >
+    <Save size={16} />
+    <span className="hidden sm:inline">保存</span>
+  </button>
+)}
           <button onClick={handleExport} className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0" title="导出备份">
             <Download size={20} />
           </button>
@@ -511,7 +539,11 @@ const handleImport = async (e) => {
       <div className="flex-1 overflow-hidden relative">
         {activeTab === 'mistakes' ? (
           /* [修改] 传递当前科目ID */
-          <MistakeSystem subjectId={activeSubjectId} />
+         <MistakeSystem
+  subjectId={activeSubjectId}
+  view={mistakeView}
+  setView={setMistakeView}
+/>
         ) : (
           <NoteSystem />
         )}
@@ -519,7 +551,12 @@ const handleImport = async (e) => {
 
       {/* 底部导航栏 */}
       <div className="bg-white border-t border-gray-200 p-2 flex justify-around items-center shrink-0 safe-area-bottom pb-4 z-40">
-        <button onClick={() => setActiveTab('mistakes')} className={cn("flex flex-col items-center gap-1 p-2 rounded-xl transition-all w-24", activeTab === 'mistakes' ? "text-blue-600 bg-blue-50" : "text-gray-400 hover:bg-gray-50")}>
+        <button
+  onClick={() => {
+    setActiveTab('mistakes');
+    setMistakeView('list');
+  }} 
+          className={cn("flex flex-col items-center gap-1 p-2 rounded-xl transition-all w-24", activeTab === 'mistakes' ? "text-blue-600 bg-blue-50" : "text-gray-400 hover:bg-gray-50")}>
           <div className="relative"><Edit size={24} strokeWidth={activeTab === 'mistakes' ? 2.5 : 2} /></div>
           <span className="text-[10px] font-bold">错题本</span>
         </button>
@@ -532,11 +569,16 @@ const handleImport = async (e) => {
   );
 }
 
-function MistakeSystem({ subjectId }) {
-  const [view, setView] = useState('list');
+function MistakeSystem({ subjectId, view, setView }) {
   const [currentMistakeId, setCurrentMistakeId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [visibleLimit, setVisibleLimit] = useState(MISTAKE_PAGE_SIZE);
+  useEffect(() => {
+  setView('list');
+  setCurrentMistakeId(null);
+  setSearchQuery('');
+  setVisibleLimit(MISTAKE_PAGE_SIZE);
+}, [subjectId, setView]);
 
   // 切换科目或搜索词时，重置为首屏 20 条。
   useEffect(() => {
@@ -617,7 +659,7 @@ function MistakeSystem({ subjectId }) {
   }
 
   return (
-    <div className="p-4 max-w-3xl mx-auto h-full overflow-y-auto pb-28">
+    <div className="w-full max-w-6xl mx-auto h-full overflow-y-auto px-3 sm:px-5 lg:px-8 py-4 pb-28">
       {view === 'list' && (
         <>
           <div className="mb-4 relative">
@@ -1332,7 +1374,7 @@ function MistakeThumb({ mistakeId, imageCount }) {
 
   if (!firstImg) {
     return (
-      <div className="w-24 h-24 bg-gray-100 flex flex-col items-center justify-center text-gray-300">
+      <div className="w-28 sm:w-40 md:w-48 h-28 sm:h-32 md:h-36 bg-gray-100 flex flex-col items-center justify-center text-gray-300 shrink-0">
         <ImageIcon size={20} />
         <span className="text-[10px] mt-1">{imageCount || 0}图</span>
       </div>
@@ -1340,7 +1382,7 @@ function MistakeThumb({ mistakeId, imageCount }) {
   }
 
   return (
-    <div className="w-24 h-24 bg-gray-50 overflow-hidden relative">
+    <div className="w-28 sm:w-40 md:w-48 h-28 sm:h-32 md:h-36 bg-gray-50 overflow-hidden relative shrink-0">
       <img
         src={firstImg}
         alt=""
@@ -1493,6 +1535,7 @@ const [aImages, setAImages] = useState(
   const [isPreviewMode, setIsPreviewMode] = useState(false);
 
   const handleSubmit = async () => {
+      if (loading) return;
   if (qImages.length === 0) return alert("必须上传题目图片");
 
   setLoading(true);
@@ -1539,9 +1582,21 @@ const [aImages, setAImages] = useState(
   }
 };
 
+    useEffect(() => {
+  const handleTopSave = () => {
+    handleSubmit();
+  };
+
+  window.addEventListener('mistake-form-save', handleTopSave);
+
+  return () => {
+    window.removeEventListener('mistake-form-save', handleTopSave);
+  };
+}, [handleSubmit]);
+
   return (
     // ... 保持原有 JSX 渲染代码不变，完全一样 ...
-    <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl p-4 sm:p-6 pb-20 space-y-5 relative">
+    <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl p-4 sm:p-6 pb-20 space-y-5 relative w-full max-w-6xl mx-auto">
       <div className="flex justify-between items-center mb-2">
          <h2 className="text-lg font-bold text-gray-800">{isEdit ? '编辑错题' : '记录错题'}</h2>
          {isEdit && <button onClick={onCancel}><X size={24} className="text-gray-400"/></button>}
@@ -1692,7 +1747,7 @@ const toggleMastered = async () => {
         </div>
 
         {/* 底部悬浮栏 */}
-        <div className="fixed bottom-20 w-full max-w-3xl left-1/2 -translate-x-1/2 px-4 z-20 flex items-center justify-center pointer-events-none">
+        <div className="fixed bottom-20 w-full max-w-6xl left-1/2 -translate-x-1/2 px-4 z-20 flex items-center justify-center pointer-events-none">
           <div className="bg-white/95 backdrop-blur-md p-2 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.15)] border border-gray-200 flex items-center gap-2 pointer-events-auto overflow-x-auto no-scrollbar max-w-full">
              {hasPrev && (<><button onClick={onPrev} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition shrink-0" title="上一题"><ChevronLeft size={24} /></button><div className="h-6 w-[1px] bg-gray-200 shrink-0"></div></>)}
              
