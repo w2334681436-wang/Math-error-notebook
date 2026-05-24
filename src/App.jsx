@@ -1,5 +1,12 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { db } from './db';
+import {
+  MISTAKE_PAGE_SIZE,
+  buildMistakeCard,
+  queryMistakeCards,
+  rebuildAllMistakeCards,
+  refreshMistakeCard
+} from './searchIndex';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { 
   Plus, Maximize, ArrowLeft, Eye, EyeOff, Trash2, Save, Edit, X, Search, ChevronRight, 
@@ -98,6 +105,21 @@ function App() {
     initDB();
   }, []);
 
+  // 索引自检：防止旧数据、导入数据、异常升级后 mistakeCards 为空。
+// 这里只重建轻量索引，不动原始 mistakes 图片数据。
+useEffect(() => {
+  const checkMistakeCards = async () => {
+    const mistakeCount = await db.mistakes.count();
+    const cardCount = await db.mistakeCards.count();
+
+    if (mistakeCount > 0 && cardCount === 0) {
+      await rebuildAllMistakeCards(db);
+    }
+  };
+
+  checkMistakeCards();
+}, []);
+
   const handleAddSubject = async () => {
     const name = prompt("请输入新科目名称（如：英语、政治）：");
     if (name && name.trim()) {
@@ -107,78 +129,322 @@ function App() {
   };
 
   // [新增] 导出备份数据
-  const handleExport = async () => {
-    try {
-      const mistakes = await db.mistakes.toArray();
-      const notes = await db.notes.toArray();
-      const subjects = await db.subjects.toArray();
-      
-      const backupData = {
-        version: 1,
-        date: new Date().toISOString(),
-        data: { mistakes, notes, subjects }
-      };
+ // [增强版] 大数据安全导出：NDJSON 分行备份，避免 Invalid string length
+const handleExport = async () => {
+  try {
+    const createdAt = new Date().toISOString();
 
-      const blob = new Blob([JSON.stringify(backupData)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      // 文件名包含日期，如: MathNotebook_Backup_2023-12-15.json
-      link.download = `MathNotebook_Backup_${new Date().toISOString().slice(0,10)}.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      alert('导出失败: ' + error.message);
+    const counts = {
+      mistakes: await db.mistakes.count(),
+      notes: await db.notes.count(),
+      subjects: await db.subjects.count()
+    };
+
+    const parts = [];
+
+    const pushLine = (obj) => {
+      parts.push(JSON.stringify(obj), '\n');
+    };
+
+    // 第一行是备份元信息
+    pushLine({
+      format: 'MathNotebookBackupNDJSON',
+      version: 2,
+      appVersion: APP_VERSION,
+      createdAt,
+      counts
+    });
+
+    // 分表逐条导出：不要把所有数据拼成一个超级 JSON 字符串
+    await db.subjects.each(record => {
+      pushLine({ table: 'subjects', record });
+    });
+
+    await db.notes.each(record => {
+      pushLine({ table: 'notes', record });
+    });
+
+    await db.mistakes.each(record => {
+      pushLine({ table: 'mistakes', record });
+    });
+
+    const blob = new Blob(parts, {
+      type: 'application/x-ndjson;charset=utf-8'
+    });
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+
+    link.href = url;
+    link.download = `MathNotebook_Backup_${createdAt.slice(0, 10)}.mathbackup`;
+
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    URL.revokeObjectURL(url);
+
+    alert(
+      `✅ 导出成功\n\n` +
+      `错题：${counts.mistakes} 条\n` +
+      `笔记：${counts.notes} 条\n` +
+      `科目：${counts.subjects} 个`
+    );
+  } catch (error) {
+    console.error(error);
+    alert('导出失败: ' + error.message);
+  }
+};
+
+// 逐行读取 .mathbackup 文件
+const readNdjsonBackup = async (file, onLineObject) => {
+  const reader = file.stream().getReader();
+  const decoder = new TextDecoder('utf-8');
+
+  let buffer = '';
+  let lineNo = 0;
+
+  while (true) {
+    const { value, done } = await reader.read();
+
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const text = line.trim();
+      if (!text) continue;
+
+      lineNo += 1;
+
+      let obj;
+      try {
+        obj = JSON.parse(text);
+      } catch (e) {
+        throw new Error(`第 ${lineNo} 行解析失败，备份文件可能损坏`);
+      }
+
+      await onLineObject(obj, lineNo);
     }
+  }
+
+  buffer += decoder.decode();
+
+  if (buffer.trim()) {
+    lineNo += 1;
+
+    let obj;
+    try {
+      obj = JSON.parse(buffer.trim());
+    } catch (e) {
+      throw new Error(`第 ${lineNo} 行解析失败，备份文件可能损坏`);
+    }
+
+    await onLineObject(obj, lineNo);
+  }
+
+  return lineNo;
+};
+
+// 导入旧版小 JSON 备份
+const importOldJsonBackup = async (file) => {
+  const text = await file.text();
+  const backup = JSON.parse(text);
+
+  if (!backup.data || !backup.data.mistakes) {
+    throw new Error('旧版 JSON 备份格式错误或数据损坏');
+  }
+
+  const importedMistakes = backup.data.mistakes || [];
+  const importedNotes = backup.data.notes || [];
+  const importedSubjects = backup.data.subjects || [];
+
+  await db.transaction('rw', db.mistakes, db.notes, db.subjects, db.mistakeCards, async () => {
+    await db.mistakes.clear();
+    await db.notes.clear();
+    await db.subjects.clear();
+    await db.mistakeCards.clear();
+
+    if (importedMistakes.length > 0) {
+      await db.mistakes.bulkPut(importedMistakes);
+      await db.mistakeCards.bulkPut(importedMistakes.map(buildMistakeCard));
+    }
+
+    if (importedNotes.length > 0) {
+      await db.notes.bulkPut(importedNotes);
+    }
+
+    if (importedSubjects.length > 0) {
+      await db.subjects.bulkPut(importedSubjects);
+    } else {
+      await db.subjects.bulkAdd([{ name: '数学' }, { name: '408' }]);
+    }
+  });
+
+  return {
+    mistakes: importedMistakes.length,
+    notes: importedNotes.length,
+    subjects: importedSubjects.length
+  };
+};
+
+// 导入新版 .mathbackup 备份
+const importNdjsonBackup = async (file) => {
+  let meta = null;
+
+  const counts = {
+    mistakes: 0,
+    notes: 0,
+    subjects: 0
   };
 
-  // [新增] 导入备份数据
-  const handleImport = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+  // 第一遍：只校验文件，不清空数据库
+  await readNdjsonBackup(file, async (obj, lineNo) => {
+    if (lineNo === 1) {
+      if (obj.format !== 'MathNotebookBackupNDJSON') {
+        throw new Error('不是有效的新版 .mathbackup 备份文件');
+      }
 
-    if (!confirm('⚠️ 警告：导入将【清空并覆盖】当前所有数据！\n\n确定要继续吗？建议先导出当前数据作为备份。')) {
-      e.target.value = ''; // 清空选择，允许重复选择同一文件
+      meta = obj;
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const backup = JSON.parse(event.target.result);
-        // 简单的数据完整性检查
-        if (!backup.data || !backup.data.mistakes) throw new Error('文件格式错误或数据损坏');
+    if (!['mistakes', 'notes', 'subjects'].includes(obj.table)) {
+      throw new Error(`第 ${lineNo} 行表名错误：${obj.table}`);
+    }
 
-        await db.transaction('rw', db.mistakes, db.notes, db.subjects, async () => {
-          // 1. 清空现有数据
-          await db.mistakes.clear();
-          await db.notes.clear();
-          await db.subjects.clear();
+    if (!obj.record || typeof obj.record !== 'object') {
+      throw new Error(`第 ${lineNo} 行记录格式错误`);
+    }
 
-          // 2. 写入备份数据
-          await db.mistakes.bulkAdd(backup.data.mistakes);
-          await db.notes.bulkAdd(backup.data.notes);
-          
-          if (backup.data.subjects && backup.data.subjects.length > 0) {
-            await db.subjects.bulkAdd(backup.data.subjects);
-          } else {
-             // 兼容旧版数据：如果没有科目表，重建默认科目
-             await db.subjects.bulkAdd([{ name: '数学' }, { name: '408' }]);
-          }
-        });
+    counts[obj.table] += 1;
+  });
 
-        alert('✅ 数据导入成功！页面将自动刷新。');
-        window.location.reload();
-      } catch (error) {
-        console.error(error);
-        alert('❌ 导入失败: ' + error.message);
-      }
-    };
-    reader.readAsText(file);
+  if (!meta) {
+    throw new Error('备份文件缺少元信息');
+  }
+
+  // 第二遍：确认文件可读后，再覆盖写入
+  await db.mistakes.clear();
+  await db.notes.clear();
+  await db.subjects.clear();
+  await db.mistakeCards.clear();
+
+  const batches = {
+    mistakes: [],
+    notes: [],
+    subjects: []
   };
 
+  const BATCH_SIZE = 20;
+
+  const flushSubjects = async () => {
+    if (batches.subjects.length === 0) return;
+    await db.subjects.bulkPut(batches.subjects);
+    batches.subjects = [];
+  };
+
+  const flushNotes = async () => {
+    if (batches.notes.length === 0) return;
+    await db.notes.bulkPut(batches.notes);
+    batches.notes = [];
+  };
+
+  const flushMistakes = async () => {
+    if (batches.mistakes.length === 0) return;
+
+    await db.mistakes.bulkPut(batches.mistakes);
+    await db.mistakeCards.bulkPut(batches.mistakes.map(buildMistakeCard));
+
+    batches.mistakes = [];
+  };
+
+  await readNdjsonBackup(file, async (obj, lineNo) => {
+    if (lineNo === 1) return;
+
+    if (obj.table === 'subjects') {
+      batches.subjects.push(obj.record);
+
+      if (batches.subjects.length >= BATCH_SIZE) {
+        await flushSubjects();
+      }
+    }
+
+    if (obj.table === 'notes') {
+      batches.notes.push(obj.record);
+
+      if (batches.notes.length >= BATCH_SIZE) {
+        await flushNotes();
+      }
+    }
+
+    if (obj.table === 'mistakes') {
+      batches.mistakes.push(obj.record);
+
+      if (batches.mistakes.length >= BATCH_SIZE) {
+        await flushMistakes();
+      }
+    }
+  });
+
+  await flushSubjects();
+  await flushNotes();
+  await flushMistakes();
+
+  if (await db.subjects.count() === 0) {
+    await db.subjects.bulkAdd([{ name: '数学' }, { name: '408' }]);
+  }
+
+  return counts;
+};
+
+// [增强版] 导入：兼容新版 .mathbackup 和旧版小 JSON
+const handleImport = async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  if (!confirm('⚠️ 警告：导入将【清空并覆盖】当前所有数据！\n\n确定要继续吗？建议先导出当前数据作为备份。')) {
+    e.target.value = '';
+    return;
+  }
+
+  try {
+    const firstText = await file.slice(0, 4096).text();
+    const firstLine = firstText.split(/\r?\n/)[0]?.trim();
+
+    let result;
+
+    try {
+      const firstObj = JSON.parse(firstLine);
+
+      if (firstObj.format === 'MathNotebookBackupNDJSON') {
+        result = await importNdjsonBackup(file);
+      } else {
+        result = await importOldJsonBackup(file);
+      }
+    } catch {
+      result = await importOldJsonBackup(file);
+    }
+
+    alert(
+      `✅ 数据导入成功！页面将自动刷新。\n\n` +
+      `错题：${result.mistakes} 条\n` +
+      `笔记：${result.notes} 条\n` +
+      `科目：${result.subjects} 个`
+    );
+
+    window.location.reload();
+  } catch (error) {
+    console.error(error);
+    alert('❌ 导入失败: ' + error.message);
+  } finally {
+    e.target.value = '';
+  }
+};
+  
   const toggleFullScreen = () => {
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch(e => console.log(e));
@@ -230,7 +496,7 @@ function App() {
           <label className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0 cursor-pointer" title="导入备份">
             <UploadCloud size={20} />
             {/* 隐藏的文件输入框，选中文件后立即触发 handleImport */}
-            <input type="file" accept=".json" onChange={handleImport} className="hidden" />
+           <input type="file" accept=".json,.mathbackup,application/json" onChange={handleImport} className="hidden" />
           </label>
           
           <div className="w-[1px] h-4 bg-gray-200 mx-1"></div>
@@ -266,106 +532,151 @@ function App() {
   );
 }
 
-// [修改] 接收 subjectId 参数
 function MistakeSystem({ subjectId }) {
-  const [view, setView] = useState('list'); 
+  const [view, setView] = useState('list');
   const [currentMistakeId, setCurrentMistakeId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
-  
-  // [关键修改] 根据 subjectId 过滤错题
-  const mistakes = useLiveQuery(() => {
+  const [visibleLimit, setVisibleLimit] = useState(MISTAKE_PAGE_SIZE);
+
+  // 切换科目或搜索词时，重置为首屏 20 条。
+  useEffect(() => {
+    setVisibleLimit(MISTAKE_PAGE_SIZE);
+  }, [subjectId, searchQuery]);
+
+  // 核心：列表只读轻量 mistakeCards，不读带 base64 图片的 mistakes。
+  // 搜索也是搜 mistakeCards 全库索引，不会只搜当前 20 条。
+  const mistakeCards = useLiveQuery(() => {
     if (!subjectId) return [];
-    return db.mistakes
-      .where('subjectId').equals(subjectId)
-      .reverse()
-      .sortBy('createdAt');
-  }, [subjectId]);
-
-  const currentMistake = useLiveQuery(() => currentMistakeId ? db.mistakes.get(currentMistakeId) : null, [currentMistakeId]);
-
-  // 下面逻辑基本不变，只是依赖项变了
-  const filteredMistakes = useMemo(() => {
-    if (!mistakes) return [];
-    if (!searchQuery) return mistakes;
-    const lowerQuery = searchQuery.toLowerCase();
-    return mistakes.filter(m => {
-      const dateStr = new Date(m.createdAt).toLocaleDateString();
-      const title = m.title || "";
-      return title.toLowerCase().includes(lowerQuery) || dateStr.includes(lowerQuery);
+    return queryMistakeCards(db, {
+      subjectId,
+      keyword: searchQuery,
+      offset: 0,
+      limit: visibleLimit
     });
-  }, [mistakes, searchQuery]);
+  }, [subjectId, searchQuery, visibleLimit]);
 
-  // 上一题/下一题逻辑（保持不变，省略部分重复代码，直接使用之前的逻辑即可，核心是 filteredMistakes 已经变了）
-  const handleNextMistake = () => {
-    if (!mistakes || !currentMistakeId) return;
-    const listToUse = searchQuery ? filteredMistakes : mistakes;
-    const currentIndex = listToUse.findIndex(m => m.id === currentMistakeId);
-    if (currentIndex !== -1 && currentIndex < listToUse.length - 1) {
-      setCurrentMistakeId(listToUse[currentIndex + 1].id);
-    } else {
-      alert("已经是最后一题了");
+  const currentMistake = useLiveQuery(
+    () => currentMistakeId ? db.mistakes.get(currentMistakeId) : null,
+    [currentMistakeId]
+  );
+
+  const list = mistakeCards || [];
+  const hasMore = list.length >= visibleLimit;
+
+  const loadMore = () => {
+    if (hasMore) {
+      setVisibleLimit(prev => prev + MISTAKE_PAGE_SIZE);
     }
   };
 
+  const handleNextMistake = () => {
+    if (!currentMistakeId) return;
+
+    const currentIndex = list.findIndex(m => m.id === currentMistakeId);
+
+    if (currentIndex !== -1 && currentIndex < list.length - 1) {
+      setCurrentMistakeId(list[currentIndex + 1].id);
+      return;
+    }
+
+    if (hasMore) {
+      setVisibleLimit(prev => prev + MISTAKE_PAGE_SIZE);
+      alert('已加载更多错题，请再点一次下一题。');
+      return;
+    }
+
+    alert('已经是最后一题了');
+  };
+
   const handlePrevMistake = () => {
-    if (!mistakes || !currentMistakeId) return;
-    const listToUse = searchQuery ? filteredMistakes : mistakes;
-    const currentIndex = listToUse.findIndex(m => m.id === currentMistakeId);
+    if (!currentMistakeId) return;
+
+    const currentIndex = list.findIndex(m => m.id === currentMistakeId);
+
     if (currentIndex > 0) {
-      setCurrentMistakeId(listToUse[currentIndex - 1].id);
+      setCurrentMistakeId(list[currentIndex - 1].id);
     } else {
-      alert("已经是第一题了");
+      alert('已经是第一题了');
     }
   };
 
   const hasNext = useMemo(() => {
-    if (!mistakes || !currentMistakeId) return false;
-    const listToUse = searchQuery ? filteredMistakes : mistakes;
-    const currentIndex = listToUse.findIndex(m => m.id === currentMistakeId);
-    return currentIndex !== -1 && currentIndex < listToUse.length - 1;
-  }, [mistakes, filteredMistakes, currentMistakeId, searchQuery]);
+    if (!currentMistakeId) return false;
+    const currentIndex = list.findIndex(m => m.id === currentMistakeId);
+    return currentIndex !== -1 && (currentIndex < list.length - 1 || hasMore);
+  }, [list, currentMistakeId, hasMore]);
 
   const hasPrev = useMemo(() => {
-    if (!mistakes || !currentMistakeId) return false;
-    const listToUse = searchQuery ? filteredMistakes : mistakes;
-    const currentIndex = listToUse.findIndex(m => m.id === currentMistakeId);
+    if (!currentMistakeId) return false;
+    const currentIndex = list.findIndex(m => m.id === currentMistakeId);
     return currentIndex > 0;
-  }, [mistakes, filteredMistakes, currentMistakeId, searchQuery]);
+  }, [list, currentMistakeId]);
 
-  // 如果没有选中科目（比如加载中），显示提示
-  if (!subjectId) return <div className="h-full flex items-center justify-center text-gray-400">正在加载科目...</div>;
+  if (!subjectId) {
+    return <div className="p-10 text-center text-gray-400">正在加载科目...</div>;
+  }
 
   return (
-    <div className="h-full overflow-y-auto bg-gray-100 pb-20">
+    <div className="p-4 max-w-3xl mx-auto h-full overflow-y-auto pb-28">
       {view === 'list' && (
-        <div className="max-w-3xl mx-auto p-3 space-y-3">
-           <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Search size={18} className="text-gray-400" /></div>
-              <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="搜索错题..." className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm transition"/>
-            </div>
-            {/* [修改] 传递 subjectId 给 Form */}
-            <MistakeList mistakes={filteredMistakes} onAdd={() => setView('add')} onOpen={(id) => { setCurrentMistakeId(id); setView('detail'); }} />
-            <div className="text-center py-4 text-gray-400 text-xs font-mono opacity-60">Build: {APP_VERSION}</div>
-        </div>
+        <>
+          <div className="mb-4 relative">
+            <Search size={18} className="absolute left-3 top-3.5 text-gray-400" />
+            <input
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="搜索错题标题、复盘、解析、日期..."
+              className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm transition"
+            />
+          </div>
+
+          <MistakeList
+            mistakes={mistakeCards}
+            onAdd={() => setView('add')}
+            onOpen={(id) => {
+              setCurrentMistakeId(id);
+              setView('detail');
+            }}
+            onLoadMore={loadMore}
+            hasMore={hasMore}
+          />
+
+          <div className="text-center text-[10px] text-gray-300 mt-4">
+            Build: {APP_VERSION}
+          </div>
+        </>
       )}
-      {/* [修改] 传递 subjectId 给 Add Form */}
-      {view === 'add' && <MistakeForm mode="add" subjectId={subjectId} onFinish={() => setView('list')} onCancel={() => setView('list')} />}
-      
-      {view === 'detail' && currentMistake && (
-        <MistakeDetail 
-          mistake={currentMistake} 
-          hasNext={hasNext} 
-          onNext={handleNextMistake} 
-          hasPrev={hasPrev} 
-          onPrev={handlePrevMistake} 
-          onDelete={() => setView('list')} 
-          onEdit={() => setView('edit')} 
-          onBack={() => setView('list')} 
+
+      {view === 'add' && (
+        <MistakeForm
+          mode="add"
+          subjectId={subjectId}
+          onFinish={() => setView('list')}
+          onCancel={() => setView('list')}
         />
       )}
-      
+
+      {view === 'detail' && currentMistake && (
+        <MistakeDetail
+          mistake={currentMistake}
+          onDelete={() => setView('list')}
+          onEdit={() => setView('edit')}
+          onNext={handleNextMistake}
+          hasNext={hasNext}
+          onPrev={handlePrevMistake}
+          hasPrev={hasPrev}
+          onBack={() => setView('list')}
+        />
+      )}
+
       {view === 'edit' && currentMistake && (
-        <MistakeForm mode="edit" initialData={currentMistake} onFinish={() => setView('detail')} onCancel={() => setView('detail')} />
+        <MistakeForm
+          mode="edit"
+          initialData={currentMistake}
+          subjectId={subjectId}
+          onFinish={() => setView('detail')}
+          onCancel={() => setView('detail')}
+        />
       )}
     </div>
   );
@@ -1010,68 +1321,161 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
   );
 }
 
-// --- [修改版] 错题列表：显示复盘次数和熟练度 ---
-function MistakeList({ mistakes, onAdd, onOpen }) {
-  if (!mistakes) return <div className="text-center mt-20 text-gray-400">加载数据中...</div>;
-  if (mistakes.length === 0) return <div className="flex flex-col items-center justify-center mt-10 text-gray-400 p-4"><div className="mb-4 p-4 bg-gray-200 rounded-full">📝</div><p className="mb-6 font-medium">没有找到相关错题</p><button onClick={onAdd} className="bg-blue-600 text-white px-6 py-2 rounded-full font-bold shadow-lg hover:bg-blue-700 transition text-sm">添加错题</button></div>;
-  
-  return (
-    <div className="space-y-3">
-      {mistakes.map((item) => {
-        // 兼容逻辑：优先取数组，没有则取旧字段，最后为空
-        const images = item.questionImages || (item.questionImg ? [item.questionImg] : []);
-        const firstImg = images[0];
-        const count = images.length;
-        // [新增] 计算复盘次数
-        const reviewCount = getReviewCount(item.reviewLogs);
+function MistakeThumb({ mistakeId, imageCount }) {
+  const mistake = useLiveQuery(
+    () => mistakeId ? db.mistakes.get(mistakeId) : null,
+    [mistakeId]
+  );
 
-        return (
-          <div key={item.id} onClick={() => onOpen(item.id)} className="bg-white rounded-xl shadow-sm border border-gray-200 active:scale-[0.98] transition-transform cursor-pointer overflow-hidden flex h-36">
-            <div className="w-[35%] p-3 flex flex-col justify-between border-r border-gray-100 bg-white z-10">
-              <div><h3 className="font-bold text-gray-800 text-sm line-clamp-3 leading-relaxed">{item.title || "未命名"}</h3></div>
-              <div className="space-y-1">
-                <div className="flex flex-wrap gap-1">
-                    <span className={cn("text-[10px] px-2 py-0.5 rounded-full font-medium border", item.reflection ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-gray-100 text-gray-400 border-gray-200')}>
-                        {item.reflection ? '已复盘' : '待复盘'}
-                    </span>
-                    {/* [新增] 复盘次数显示 */}
-                    {reviewCount > 0 && (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-indigo-50 text-indigo-600 border-indigo-100 flex items-center gap-0.5">
-                        <Calendar size={10} /> {reviewCount}次
-                      </span>
-                    )}
-                    {/* 熟练度显示 */}
-                    {item.isMastered && (
-                        <span className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-green-50 text-green-600 border-green-100 flex items-center gap-0.5">
-                            <CheckCircle2 size={10} /> 已掌握
-                        </span>
-                    )}
-                </div>
-                <div className="text-[10px] text-gray-400 font-medium pl-0.5">{new Date(item.createdAt).toLocaleDateString(undefined, {month:'2-digit', day:'2-digit'})}</div>
-              </div>
-            </div>
-            <div className="flex-1 relative bg-gray-50 h-full group">
-              {firstImg ? (
-                <>
-                  <img src={firstImg} alt="题目" className="absolute inset-0 w-full h-full object-cover" />
-                  {count > 1 && (
-                    <div className="absolute bottom-2 right-2 bg-black/60 text-white text-xs px-2 py-0.5 rounded-full backdrop-blur-sm flex items-center gap-1">
-                      <ImageIcon size={10}/> +{count - 1}
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="flex items-center justify-center h-full text-gray-300 text-xs">无图</div>
-              )}
-            </div>
-          </div>
-        );
-      })}
-      <button onClick={onAdd} className="fixed bottom-20 right-6 bg-blue-600 text-white p-4 rounded-full shadow-[0_4px_14px_rgba(37,99,235,0.4)] hover:bg-blue-700 active:scale-90 transition-all z-40"><Plus size={26} strokeWidth={2.5} /></button>
+  const images = mistake?.questionImages || (mistake?.questionImg ? [mistake.questionImg] : []);
+  const firstImg = images[0];
+
+  if (!firstImg) {
+    return (
+      <div className="w-24 h-24 bg-gray-100 flex flex-col items-center justify-center text-gray-300">
+        <ImageIcon size={20} />
+        <span className="text-[10px] mt-1">{imageCount || 0}图</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-24 h-24 bg-gray-50 overflow-hidden relative">
+      <img
+        src={firstImg}
+        alt=""
+        loading="lazy"
+        className="w-full h-full object-cover"
+      />
+      {imageCount > 1 && (
+        <div className="absolute right-1 bottom-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded">
+          +{imageCount - 1}
+        </div>
+      )}
     </div>
   );
 }
 
+function MistakeList({ mistakes, onAdd, onOpen, onLoadMore, hasMore }) {
+  const loaderRef = useRef(null);
+
+  useEffect(() => {
+    if (!hasMore || !loaderRef.current) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          onLoadMore?.();
+        }
+      },
+      { rootMargin: '360px' }
+    );
+
+    observer.observe(loaderRef.current);
+
+    return () => observer.disconnect();
+  }, [hasMore, onLoadMore, mistakes?.length]);
+
+  if (!mistakes) {
+    return <div className="text-center mt-20 text-gray-400">加载数据中...</div>;
+  }
+
+  if (mistakes.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center mt-10 text-gray-400 p-4">
+        <div className="mb-4 p-4 bg-gray-200 rounded-full">
+          <FileText size={32} />
+        </div>
+        <p className="mb-6 font-medium">没有找到相关错题</p>
+        <button
+          onClick={onAdd}
+          className="bg-blue-600 text-white px-6 py-2 rounded-full font-bold shadow-lg hover:bg-blue-700 transition text-sm"
+        >
+          添加错题
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {mistakes.map((item) => (
+        <div
+          key={item.id}
+          onClick={() => onOpen(item.id)}
+          className="bg-white rounded-xl shadow-sm border border-gray-200 active:scale-[0.98] transition-transform cursor-pointer overflow-hidden flex"
+        >
+          <MistakeThumb mistakeId={item.id} imageCount={item.imageCount} />
+
+          <div className="p-3 flex-1 min-w-0">
+            <h3 className="font-bold text-gray-800 text-sm line-clamp-2 leading-relaxed">
+              {item.title || '未命名'}
+            </h3>
+
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <span
+                className={cn(
+                  "text-[10px] px-2 py-0.5 rounded-full font-medium border",
+                  item.hasReflection
+                    ? "bg-blue-50 text-blue-600 border-blue-100"
+                    : "bg-gray-100 text-gray-400 border-gray-200"
+                )}
+              >
+                {item.hasReflection ? '已复盘' : '待复盘'}
+              </span>
+
+              {item.reviewCount > 0 && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-indigo-50 text-indigo-600 border-indigo-100 flex items-center gap-0.5">
+                  <Calendar size={10} />
+                  {item.reviewCount}次
+                </span>
+              )}
+
+              {item.isMastered && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-green-50 text-green-600 border-green-100 flex items-center gap-0.5">
+                  <CheckCircle2 size={10} />
+                  已掌握
+                </span>
+              )}
+
+              {item.imageCount > 0 && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-orange-50 text-orange-600 border-orange-100 flex items-center gap-0.5">
+                  <ImageIcon size={10} />
+                  {item.imageCount}图
+                </span>
+              )}
+
+              {item.hasAnalysis && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-purple-50 text-purple-600 border-purple-100">
+                  有解析
+                </span>
+              )}
+            </div>
+
+            <div className="mt-2 text-[10px] text-gray-400 font-medium">
+              {new Date(item.createdAt).toLocaleDateString(undefined, {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+              })}
+            </div>
+          </div>
+        </div>
+      ))}
+
+      <div ref={loaderRef} className="py-6 text-center text-xs text-gray-400">
+        {hasMore ? '继续下拉加载更多...' : '已经到底了'}
+      </div>
+
+      <button
+        onClick={onAdd}
+        className="fixed bottom-20 right-6 bg-blue-600 text-white p-4 rounded-full shadow-[0_4px_14px_rgba(37,99,235,0.4)] hover:bg-blue-700 active:scale-90 transition-all z-40"
+      >
+        <Plus size={26} strokeWidth={2.5} />
+      </button>
+    </div>
+  );
+}
 // [修改] 接收 subjectId
 function MistakeForm({ mode, initialData, onFinish, onCancel, subjectId }) {
   const isEdit = mode === 'edit';
@@ -1089,28 +1493,51 @@ const [aImages, setAImages] = useState(
   const [isPreviewMode, setIsPreviewMode] = useState(false);
 
   const handleSubmit = async () => {
-    if (qImages.length === 0) return alert("必须上传题目图片");
-    setLoading(true);
-    const data = { 
-      title, 
-      questionImages: qImages, 
-      questionImg: qImages[0], 
-     analysisImages: aImages,      // 新增：保存多张解析图
-      analysisImg: aImages[0] || null, // 兼容：保留首图字段，防止旧逻辑报错
-      analysisText, 
-      reflection 
-    };
-    try {
-      if (isEdit) {
-        // 编辑模式：subjectId 保持不变（已存在于 id 对应的记录中）
-        await db.mistakes.update(initialData.id, data);
-      } else {
-        // [修改] 新增模式：写入当前的 subjectId
-        await db.mistakes.add({ ...data, subjectId, createdAt: new Date() });
-      }
-      onFinish();
-    } catch (e) { alert("保存失败: " + e.message); } finally { setLoading(false); }
+  if (qImages.length === 0) return alert("必须上传题目图片");
+
+  setLoading(true);
+
+  const now = new Date();
+
+  const data = {
+    title,
+    questionImages: qImages,
+    questionImg: qImages[0],
+    analysisImages: aImages,
+    analysisImg: aImages[0] || null,
+    analysisText,
+    reflection,
+    updatedAt: now
   };
+
+  try {
+    if (isEdit) {
+      await db.transaction('rw', db.mistakes, db.mistakeCards, async () => {
+        await db.mistakes.update(initialData.id, data);
+
+        const updatedMistake = await db.mistakes.get(initialData.id);
+        await db.mistakeCards.put(buildMistakeCard(updatedMistake));
+      });
+    } else {
+      await db.transaction('rw', db.mistakes, db.mistakeCards, async () => {
+        const id = await db.mistakes.add({
+          ...data,
+          subjectId,
+          createdAt: now
+        });
+
+        const newMistake = await db.mistakes.get(id);
+        await db.mistakeCards.put(buildMistakeCard(newMistake));
+      });
+    }
+
+    onFinish();
+  } catch (e) {
+    alert("保存失败: " + e.message);
+  } finally {
+    setLoading(false);
+  }
+};
 
   return (
     // ... 保持原有 JSX 渲染代码不变，完全一样 ...
@@ -1198,24 +1625,36 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
       
       // 如果最后一次复盘不是今天，则追加记录
       if (lastLogDate !== today) {
-        db.mistakes.update(mistake.id, {
-          reviewLogs: [...logs, Date.now()]
-        });
+        db.mistakes
+  .update(mistake.id, {
+    reviewLogs: [...logs, Date.now()],
+    updatedAt: new Date()
+  })
+  .then(() => refreshMistakeCard(db, mistake.id));
       }
     }
   }, [showAnalysis, mistake]);
   
-  const handleDelete = async () => { 
-    if(confirm('删除后无法恢复，确定吗？')) { 
-      await db.mistakes.delete(mistake.id); 
-      onDelete(); 
-    } 
+  const handleDelete = async () => {
+  if (confirm('删除后无法恢复，确定吗？')) {
+    await db.transaction('rw', db.mistakes, db.mistakeCards, async () => {
+      await db.mistakes.delete(mistake.id);
+      await db.mistakeCards.delete(mistake.id);
+    });
+
+    onDelete();
   }
+};
 
   // 切换熟练掌握状态
-  const toggleMastered = async () => {
-    await db.mistakes.update(mistake.id, { isMastered: !mistake.isMastered });
-  };
+const toggleMastered = async () => {
+  await db.mistakes.update(mistake.id, {
+    isMastered: !mistake.isMastered,
+    updatedAt: new Date()
+  });
+
+  await refreshMistakeCard(db, mistake.id);
+};
 
   // 兼容多图和单图
   const images = mistake.questionImages || (mistake.questionImg ? [mistake.questionImg] : []);
