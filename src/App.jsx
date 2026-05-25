@@ -507,6 +507,17 @@ const handleImport = async (e) => {
   </button>
 )}
 
+{activeTab === 'mistakes' && mistakeView === 'detail' && (
+  <button
+    onClick={() => setMistakeView('edit')}
+    className="px-3 py-2 bg-gray-100 text-gray-700 rounded-full shrink-0 flex items-center gap-1 text-xs font-bold hover:bg-gray-200"
+    title="编辑当前错题"
+  >
+    <Edit size={16} />
+    <span className="hidden sm:inline">编辑</span>
+  </button>
+)}
+
 {activeTab === 'mistakes' && (mistakeView === 'add' || mistakeView === 'edit') && (
   <button
     onClick={() => window.dispatchEvent(new Event('mistake-form-save'))}
@@ -573,11 +584,21 @@ function MistakeSystem({ subjectId, view, setView }) {
   const [currentMistakeId, setCurrentMistakeId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [visibleLimit, setVisibleLimit] = useState(MISTAKE_PAGE_SIZE);
+  const [highlightedMistakeId, setHighlightedMistakeId] = useState(null);
+
+  const scrollerRef = useRef(null);
+  const listScrollTopRef = useRef(0);
   useEffect(() => {
   setView('list');
   setCurrentMistakeId(null);
   setSearchQuery('');
   setVisibleLimit(MISTAKE_PAGE_SIZE);
+  setHighlightedMistakeId(null);
+  listScrollTopRef.current = 0;
+
+  if (scrollerRef.current) {
+    scrollerRef.current.scrollTop = 0;
+  }
 }, [subjectId, setView]);
 
   // 切换科目或搜索词时，重置为首屏 20 条。
@@ -604,6 +625,35 @@ function MistakeSystem({ subjectId, view, setView }) {
 
   const list = mistakeCards || [];
   const hasMore = list.length >= visibleLimit;
+  useEffect(() => {
+  if (view !== 'list' || !currentMistakeId) return;
+
+  setHighlightedMistakeId(currentMistakeId);
+
+  const rafId = requestAnimationFrame(() => {
+    if (scrollerRef.current) {
+      scrollerRef.current.scrollTo({
+        top: listScrollTopRef.current,
+        behavior: 'auto'
+      });
+    }
+
+    const target = document.getElementById(`mistake-card-${currentMistakeId}`);
+    target?.scrollIntoView({
+      block: 'nearest',
+      behavior: 'smooth'
+    });
+  });
+
+  const timer = setTimeout(() => {
+    setHighlightedMistakeId(null);
+  }, 2500);
+
+  return () => {
+    cancelAnimationFrame(rafId);
+    clearTimeout(timer);
+  };
+}, [view, currentMistakeId, list.length]);
 
   const loadMore = () => {
     if (hasMore) {
@@ -659,7 +709,10 @@ function MistakeSystem({ subjectId, view, setView }) {
   }
 
   return (
-    <div className="w-full max-w-6xl mx-auto h-full overflow-y-auto px-3 sm:px-5 lg:px-8 py-4 pb-28">
+    <div
+  ref={scrollerRef}
+  className="w-full max-w-6xl mx-auto h-full overflow-y-auto px-3 sm:px-5 lg:px-8 py-4 pb-28"
+>
       {view === 'list' && (
         <>
           <div className="mb-4 relative">
@@ -672,16 +725,19 @@ function MistakeSystem({ subjectId, view, setView }) {
             />
           </div>
 
-          <MistakeList
-            mistakes={mistakeCards}
-            onAdd={() => setView('add')}
-            onOpen={(id) => {
-              setCurrentMistakeId(id);
-              setView('detail');
-            }}
-            onLoadMore={loadMore}
-            hasMore={hasMore}
-          />
+         <MistakeList
+  mistakes={mistakeCards}
+  highlightedId={highlightedMistakeId}
+  onAdd={() => setView('add')}
+  onOpen={(id) => {
+    listScrollTopRef.current = scrollerRef.current?.scrollTop || 0;
+    setHighlightedMistakeId(id);
+    setCurrentMistakeId(id);
+    setView('detail');
+  }}
+  onLoadMore={loadMore}
+  hasMore={hasMore}
+/>
 
           <div className="text-center text-[10px] text-gray-300 mt-4">
             Build: {APP_VERSION}
@@ -1398,7 +1454,7 @@ function MistakeThumb({ mistakeId, imageCount }) {
   );
 }
 
-function MistakeList({ mistakes, onAdd, onOpen, onLoadMore, hasMore }) {
+function MistakeList({ mistakes, highlightedId, onAdd, onOpen, onLoadMore, hasMore }) {
   const loaderRef = useRef(null);
 
   useEffect(() => {
@@ -1443,10 +1499,16 @@ function MistakeList({ mistakes, onAdd, onOpen, onLoadMore, hasMore }) {
     <div className="space-y-3">
       {mistakes.map((item) => (
         <div
-          key={item.id}
-          onClick={() => onOpen(item.id)}
-          className="bg-white rounded-xl shadow-sm border border-gray-200 active:scale-[0.98] transition-transform cursor-pointer overflow-hidden flex"
-        >
+  id={`mistake-card-${item.id}`}
+  key={item.id}
+  onClick={() => onOpen(item.id)}
+  className={cn(
+    "bg-white rounded-xl shadow-sm border active:scale-[0.98] transition-all cursor-pointer overflow-hidden flex",
+    highlightedId === item.id
+      ? "border-blue-500 ring-2 ring-blue-200 bg-blue-50/60"
+      : "border-gray-200"
+  )}
+>
           <MistakeThumb mistakeId={item.id} imageCount={item.imageCount} />
 
           <div className="p-3 flex-1 min-w-0">
