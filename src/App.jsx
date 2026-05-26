@@ -27,6 +27,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 
 // --- 工具函数 ---
 
@@ -48,6 +49,43 @@ const getReviewCount = (logs) => {
 
 const generateId = () => Math.random().toString(36).substr(2, 9);
 const APP_VERSION = `v${__APP_VERSION__}`;
+const normalizeMarkdownMath = (markdown = '') => {
+  const source = String(markdown ?? '');
+
+  // 避免破坏 ```代码块``` 里的反斜杠
+  return source
+    .split(/(```[\s\S]*?```)/g)
+    .map(part => {
+      if (part.startsWith('```')) return part;
+
+      return part
+        // 把 \[ ... \] 转成 $$ ... $$
+        .replace(/\\\[([\s\S]*?)\\\]/g, (_, expr) => {
+          return `\n\n$$\n${expr.trim()}\n$$\n\n`;
+        })
+        // 把 \( ... \) 转成 $ ... $
+        .replace(/\\\(([^\n]*?)\\\)/g, (_, expr) => {
+          return `$${expr.trim()}$`;
+        });
+    })
+    .join('');
+};
+
+function MarkdownView({ children }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[
+        remarkGfm,
+        [remarkMath, { singleDollarTextMath: true }]
+      ]}
+      rehypePlugins={[
+        [rehypeKatex, { strict: false, throwOnError: false }]
+      ]}
+    >
+      {normalizeMarkdownMath(children)}
+    </ReactMarkdown>
+  );
+}
 
 // [原有] 递归删除
 const deleteNoteRecursive = async (nodeId) => {
@@ -1377,10 +1415,9 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
               <div 
     className="w-full p-4 bg-white border border-gray-200 rounded-xl min-h-[120px] prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100 prose-pre:text-gray-800 prose-code:text-gray-800 transition"
 >
-                 {text ? (
-                   <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
-                     {text}
-                   </ReactMarkdown>
+                 <MarkdownView>
+  {text}
+</MarkdownView>
                  ) : (
                    <span className="text-gray-400 italic flex items-center gap-1"><Edit size={14}/> 点击此处开始编写笔记 (支持 Markdown & LaTeX)...</span>
                  )}
@@ -1693,9 +1730,9 @@ const [aImages, setAImages] = useState(
           {isPreviewMode ? (
             <div className="w-full mt-3 p-4 bg-gray-50 border border-gray-200 rounded-xl min-h-[160px] prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2">
                {analysisText ? (
-                 <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
-                   {analysisText}
-                 </ReactMarkdown>
+                 <MarkdownView>
+  {analysisText}
+</MarkdownView>
                ) : (
                  <span className="text-gray-400 italic">暂无内容...</span>
                )}
@@ -1854,12 +1891,9 @@ const toggleMastered = async () => {
             </div>
             
             <div className="text-gray-700 text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100 prose-pre:text-gray-800 prose-code:text-gray-800">
-   <ReactMarkdown 
-     remarkPlugins={[remarkGfm, remarkMath]} 
-     rehypePlugins={[rehypeKatex]}
-   >
-     {mistake.analysisText || "暂无文字解析"}
-   </ReactMarkdown>
+  <MarkdownView>
+  {mistake.analysisText || "暂无文字解析"}
+</MarkdownView>
 </div>
           </div>
           <div className="h-20"></div>
