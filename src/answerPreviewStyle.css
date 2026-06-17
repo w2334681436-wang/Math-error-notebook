@@ -7,9 +7,26 @@
   --answer-preview-text: #111827;
   --answer-preview-muted: #475569;
   --answer-preview-border: #e5e7eb;
+  --answer-preview-side-line: #111827;
   --answer-preview-soft: #f8fafc;
   --answer-preview-code: #f6f7f9;
   --answer-preview-link: #2563eb;
+}
+
+
+/* 解析预览容器：覆盖原项目可能带的绿色左竖杠，改为左右两侧黑色细线。 */
+.math-answer-card {
+  border-left: 1px solid var(--answer-preview-side-line) !important;
+  border-right: 1px solid var(--answer-preview-side-line) !important;
+  border-left-color: var(--answer-preview-side-line) !important;
+  border-right-color: var(--answer-preview-side-line) !important;
+  border-left-width: 1px !important;
+  border-right-width: 1px !important;
+}
+
+.math-answer-preview {
+  padding-left: clamp(14px, 3vw, 24px);
+  padding-right: clamp(14px, 3vw, 24px);
 }
 
 .math-answer-card {
@@ -108,9 +125,10 @@
 .math-answer-preview blockquote {
   margin: 1.05em 0;
   padding: 0.72em 1em;
-  border-left: 4px solid #d1d5db;
-  background: linear-gradient(90deg, #f8fafc, rgba(248, 250, 252, 0.35));
-  border-radius: 0 12px 12px 0;
+  border-left: 1px solid var(--answer-preview-side-line);
+  border-right: 1px solid var(--answer-preview-side-line);
+  background: #f8fafc;
+  border-radius: 12px;
   color: #334155;
 }
 

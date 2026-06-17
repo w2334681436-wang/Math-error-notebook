@@ -31,6 +31,10 @@ function isElementVisible(el) {
   return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
 }
 
+function isInsideReviewPatchUi(el) {
+  return Boolean(el?.closest?.(`#${ROOT_ID}, #${MENU_ID}, #${DECISION_BAR_ID}, #math-review-toast`));
+}
+
 function buttonText(button) {
   return (button?.textContent || '').replace(/\s+/g, ' ').trim();
 }
@@ -88,7 +92,9 @@ async function getSubjects() {
 }
 
 function findVisibleSubjectButtons(subjects) {
-  const buttons = Array.from(document.querySelectorAll('button')).filter(isElementVisible);
+  const buttons = Array.from(document.querySelectorAll('button'))
+    .filter(isElementVisible)
+    .filter(button => !isInsideReviewPatchUi(button));
   return subjects
     .map(subject => {
       const candidates = buttons.filter(button => buttonText(button) === subject.name);
@@ -187,6 +193,7 @@ async function calculateHeaderSlot(subject) {
 
   const sameRowButtons = Array.from(document.querySelectorAll('button'))
     .filter(isElementVisible)
+    .filter(button => !isInsideReviewPatchUi(button))
     .map(button => ({ button, rect: button.getBoundingClientRect(), text: buttonText(button) }))
     .filter(item => Math.abs((item.rect.top + item.rect.height / 2) - rowCenterY) <= 14);
 
@@ -232,11 +239,12 @@ async function calculateHeaderSlot(subject) {
 
 function styleRoundRoot(root, slot) {
   lastRootBox = slot;
+  const width = Math.max(220, Math.floor(slot.width || (window.innerWidth - slot.left - slot.right)));
   root.style.cssText = [
     'position:fixed',
     `top:${slot.top}px`,
     `left:${slot.left}px`,
-    `right:${slot.right}px`,
+    `width:${width}px`,
     'height:44px',
     'z-index:99990',
     'display:flex',
@@ -249,7 +257,9 @@ function styleRoundRoot(root, slot) {
     'box-shadow:none',
     'pointer-events:none',
     'min-width:0',
-    'max-width:100vw'
+    'max-width:calc(100vw - 16px)',
+    'transform:translateZ(0)',
+    'will-change:auto'
   ].join(';');
 }
 
@@ -349,42 +359,55 @@ async function renderRoundDirectory() {
   }
 
   const compact = slot.compact;
-  root.innerHTML = `
-    <span style="pointer-events:auto;font-size:12px;color:#64748b;font-weight:900;white-space:nowrap;${compact ? 'display:none;' : ''}">刷题列表</span>
-    <button id="math-review-round-toggle" type="button" style="pointer-events:auto;height:34px;border:0;background:#2563eb;color:#fff;border-radius:999px;padding:0 12px;font-size:13px;font-weight:900;white-space:nowrap;box-shadow:0 4px 12px rgba(37,99,235,.22);">
-      ${compact ? `第${selectedRound}轮` : getRoundName(selectedRound)} ▾
-    </button>
-    <span style="pointer-events:auto;font-size:12px;color:#64748b;white-space:nowrap;display:inline-flex;align-items:center;font-weight:800;">
-      ${counts[selectedRound - 1] || 0}题
-    </span>
-    <button id="math-review-last-progress" type="button" ${lastProgress ? '' : 'disabled'} style="pointer-events:auto;height:34px;border:0;border-radius:999px;padding:0 10px;font-size:12px;font-weight:800;white-space:nowrap;background:${lastProgress ? '#ecfdf5' : '#f1f5f9'};color:${lastProgress ? '#047857' : '#94a3b8'};">
-      ${lastProgress ? '上次刷到' : '暂无进度'}
-    </button>
-  `;
-
-  root.querySelector('#math-review-round-toggle')?.addEventListener('click', (event) => {
-    event.stopPropagation();
-    roundMenuOpen = !roundMenuOpen;
-    renderRoundMenu(root, subject, roundCount, selectedRound, counts);
+  const rootState = JSON.stringify({
+    subjectId: subject.id,
+    selectedRound,
+    roundCount,
+    counts,
+    compact,
+    lastMistakeId: lastProgress?.mistakeId || null
   });
 
-  root.querySelector('#math-review-last-progress')?.addEventListener('click', (event) => {
-    event.stopPropagation();
-    if (!lastProgress?.mistakeId) return;
-    setSelectedRound(subject.id, selectedRound);
-    localStorage.setItem(PENDING_OPEN_KEY, JSON.stringify({
-      subjectId: subject.id,
-      roundNo: selectedRound,
-      mistakeId: lastProgress.mistakeId,
-      createdAt: Date.now()
-    }));
-    window.location.reload();
-  });
+  if (root.dataset.reviewState !== rootState) {
+    root.dataset.reviewState = rootState;
+    root.innerHTML = `
+      <span style="pointer-events:auto;font-size:12px;color:#64748b;font-weight:900;white-space:nowrap;${compact ? 'display:none;' : ''}">刷题列表</span>
+      <button id="math-review-round-toggle" type="button" style="pointer-events:auto;height:34px;border:0;background:#2563eb;color:#fff;border-radius:999px;padding:0 12px;font-size:13px;font-weight:900;white-space:nowrap;box-shadow:0 4px 12px rgba(37,99,235,.22);">
+        ${compact ? `第${selectedRound}轮` : getRoundName(selectedRound)} ▾
+      </button>
+      <span style="pointer-events:auto;font-size:12px;color:#64748b;white-space:nowrap;display:inline-flex;align-items:center;font-weight:800;">
+        ${counts[selectedRound - 1] || 0}题
+      </span>
+      <button id="math-review-last-progress" type="button" ${lastProgress ? '' : 'disabled'} style="pointer-events:auto;height:34px;border:0;border-radius:999px;padding:0 10px;font-size:12px;font-weight:800;white-space:nowrap;background:${lastProgress ? '#ecfdf5' : '#f1f5f9'};color:${lastProgress ? '#047857' : '#94a3b8'};">
+        ${lastProgress ? '上次刷到' : '暂无进度'}
+      </button>
+    `;
+
+    root.querySelector('#math-review-round-toggle')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      roundMenuOpen = !roundMenuOpen;
+      renderRoundMenu(root, subject, roundCount, selectedRound, counts);
+    });
+
+    root.querySelector('#math-review-last-progress')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (!lastProgress?.mistakeId) return;
+      setSelectedRound(subject.id, selectedRound);
+      localStorage.setItem(PENDING_OPEN_KEY, JSON.stringify({
+        subjectId: subject.id,
+        roundNo: selectedRound,
+        mistakeId: lastProgress.mistakeId,
+        createdAt: Date.now()
+      }));
+      window.location.reload();
+    });
+  }
 
   renderRoundMenu(root, subject, roundCount, selectedRound, counts);
 }
 
 function captureListOpenClick(event) {
+  if (isInsideReviewPatchUi(event.target)) return;
   const card = event.target.closest?.('[id^="mistake-card-"]');
   if (!card) return;
   const id = card.id.replace('mistake-card-', '');
@@ -600,13 +623,19 @@ function startReviewRoundsPatch() {
   }, true);
 
   window.addEventListener('resize', scheduleRender);
-  window.addEventListener('scroll', scheduleRender, true);
+  window.addEventListener('orientationchange', scheduleRender);
 
-  const observer = new MutationObserver(scheduleRender);
+  const observer = new MutationObserver((mutations) => {
+    const onlyPatchUi = mutations.every(mutation => {
+      const target = mutation.target;
+      return isInsideReviewPatchUi(target) || Array.from(mutation.addedNodes || []).every(node => node.nodeType === 1 && isInsideReviewPatchUi(node));
+    });
+    if (!onlyPatchUi) scheduleRender();
+  });
   observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
   scheduleRender();
-  setInterval(scheduleRender, 1000);
+  setInterval(scheduleRender, 1500);
 }
 
 if (document.readyState === 'loading') {
