@@ -1,0 +1,231 @@
+/* src/answerPreviewStyle.css
+   作用范围：只作用于 answerPreviewPatch.js 标记出来的题目详情解析区。
+   不使用全局 p/table/pre/blockquote 选择器，不改变主页、知识库、编辑器、题目图片列表。 */
+
+:root {
+  --answer-preview-width: min(100%, 780px);
+  --answer-preview-text: #111827;
+  --answer-preview-muted: #475569;
+  --answer-preview-border: #e5e7eb;
+  --answer-preview-soft: #f8fafc;
+  --answer-preview-code: #f6f7f9;
+  --answer-preview-link: #2563eb;
+}
+
+.math-answer-card {
+  max-width: var(--answer-preview-width) !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.math-answer-preview {
+  max-width: var(--answer-preview-width);
+  margin-left: auto;
+  margin-right: auto;
+  color: var(--answer-preview-text);
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.78;
+  letter-spacing: 0.01em;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: anywhere;
+}
+
+.math-answer-preview > :first-child { margin-top: 0 !important; }
+.math-answer-preview > :last-child { margin-bottom: 0 !important; }
+
+.math-answer-preview p {
+  margin: 0.72em 0;
+  color: var(--answer-preview-text);
+}
+
+.math-answer-preview h1,
+.math-answer-preview h2,
+.math-answer-preview h3,
+.math-answer-preview h4,
+.math-answer-preview h5,
+.math-answer-preview h6 {
+  color: #0f172a;
+  font-weight: 760;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  scroll-margin-top: 88px;
+}
+
+.math-answer-preview h1 {
+  font-size: clamp(1.55rem, 3vw, 2rem);
+  margin: 1.5em 0 0.72em;
+  padding-bottom: 0.36em;
+  border-bottom: 1px solid var(--answer-preview-border);
+}
+
+.math-answer-preview h2 {
+  font-size: clamp(1.32rem, 2.4vw, 1.68rem);
+  margin: 1.4em 0 0.65em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--answer-preview-border);
+}
+
+.math-answer-preview h3 {
+  font-size: clamp(1.14rem, 2vw, 1.3rem);
+  margin: 1.18em 0 0.55em;
+}
+
+.math-answer-preview h4,
+.math-answer-preview h5,
+.math-answer-preview h6 {
+  font-size: 1.02rem;
+  margin: 1em 0 0.42em;
+}
+
+.math-answer-preview strong {
+  font-weight: 760;
+  color: #020617;
+}
+
+.math-answer-preview a {
+  color: var(--answer-preview-link);
+  text-decoration: none;
+  font-weight: 560;
+}
+
+.math-answer-preview a:hover { text-decoration: underline; }
+
+.math-answer-preview ul,
+.math-answer-preview ol {
+  margin: 0.76em 0 0.95em 1.36em;
+  padding-left: 0.54em;
+}
+
+.math-answer-preview li {
+  margin: 0.32em 0;
+  padding-left: 0.12em;
+}
+
+.math-answer-preview li > p { margin: 0.28em 0; }
+
+.math-answer-preview blockquote {
+  margin: 1.05em 0;
+  padding: 0.72em 1em;
+  border-left: 4px solid #d1d5db;
+  background: linear-gradient(90deg, #f8fafc, rgba(248, 250, 252, 0.35));
+  border-radius: 0 12px 12px 0;
+  color: #334155;
+}
+
+.math-answer-preview blockquote > :first-child { margin-top: 0; }
+.math-answer-preview blockquote > :last-child { margin-bottom: 0; }
+
+.math-answer-preview hr {
+  border: 0;
+  border-top: 1px solid var(--answer-preview-border);
+  margin: 2em 0;
+}
+
+.math-answer-preview code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", "Microsoft YaHei Mono", monospace;
+  font-size: 0.92em;
+  background: var(--answer-preview-code);
+  border: 1px solid #eaecf0;
+  border-radius: 6px;
+  padding: 0.14em 0.36em;
+  color: #111827;
+}
+
+.math-answer-preview pre {
+  position: relative;
+  margin: 1.05em 0 1.25em;
+  padding: 1em 1.08em;
+  border-radius: 14px;
+  border: 1px solid var(--answer-preview-border);
+  background: var(--answer-preview-code);
+  overflow: auto;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.72);
+  -webkit-overflow-scrolling: touch;
+}
+
+.math-answer-preview pre code {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #111827;
+  font-size: 0.92rem;
+  line-height: 1.68;
+  white-space: pre;
+}
+
+.math-answer-preview table {
+  width: 100%;
+  margin: 1.05em 0 1.35em;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--answer-preview-border);
+  border-radius: 14px;
+  background: #fff;
+  font-size: 0.94em;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.math-answer-preview thead { background: #f8fafc; }
+
+.math-answer-preview th,
+.math-answer-preview td {
+  padding: 0.72em 0.86em;
+  border-right: 1px solid var(--answer-preview-border);
+  border-bottom: 1px solid var(--answer-preview-border);
+  vertical-align: top;
+  min-width: 72px;
+}
+
+.math-answer-preview th {
+  font-weight: 720;
+  color: #111827;
+  white-space: nowrap;
+}
+
+.math-answer-preview tr:last-child td { border-bottom: 0; }
+.math-answer-preview th:last-child,
+.math-answer-preview td:last-child { border-right: 0; }
+
+.math-answer-preview img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1.05em auto;
+  border-radius: 14px;
+  border: 1px solid var(--answer-preview-border);
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.06);
+}
+
+.math-answer-preview .katex { font-size: 1.04em; }
+
+.math-answer-preview .katex-display {
+  margin: 1.05em 0;
+  padding: 0.28em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+  -webkit-overflow-scrolling: touch;
+}
+
+.math-answer-preview .katex-display > .katex {
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .math-answer-preview {
+    font-size: 15.5px;
+    line-height: 1.72;
+  }
+
+  .math-answer-preview th,
+  .math-answer-preview td {
+    padding: 0.62em 0.72em;
+  }
+}
