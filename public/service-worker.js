@@ -1,7 +1,7 @@
-// Service Worker: ChatGPT Markdown 样式补丁强制刷新缓存版
+// Service Worker: 只保留答案解析预览美化补丁，强制刷新缓存版
 // 修改 CACHE_NAME 后，浏览器会安装新 SW，并清理旧缓存。
 // build 时 update-sw.js 还会再次把这里替换成时间戳版本。
-const CACHE_NAME = 'math-notebook-cache-v202606172110';
+const CACHE_NAME = 'math-notebook-cache-v202606172125';
 
 const APP_SHELL_FILES = [
   '/',
@@ -41,7 +41,7 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(event.request.url);
 
-  // HTML 导航请求必须网络优先，否则用户会一直看到旧页面。
+  // HTML 导航请求网络优先，避免一直看到上一版全局 ChatGPT 样式缓存。
   if (event.request.mode === 'navigate' || url.pathname === '/' || url.pathname.endsWith('/index.html')) {
     event.respondWith(
       fetch(event.request)
