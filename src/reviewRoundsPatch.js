@@ -1,8 +1,9 @@
 // src/reviewRoundsPatch.js
-// 新复盘轮次系统 UI 修正版：
-// 1. 刷题轮次目录嵌入顶部科目栏右侧，不再单独悬浮占一整行。
-// 2. “加入下一轮/已掌握”只在打开解析后出现，并嵌入原详情页底部按钮栏。
-// 3. 打开题目/查看解析不再自动增加旧复盘次数。
+// 新复盘轮次系统 UI 可靠修正版：
+// 1. 刷题轮次目录固定嵌入“科目标题栏右侧”，不再另外生成一整行。
+// 2. 只在主页错题列表显示轮次目录，避免遮挡题目详情。
+// 3. “加入下一轮/已掌握”只在打开解析后出现，并插入原详情页底部按钮栏。
+// 4. 打开题目/查看解析不记录刷过；只有点击两个决策按钮才记录。
 import { db } from './db';
 import { refreshMistakeCard } from './searchIndex';
 
@@ -16,6 +17,7 @@ const DECISION_BAR_ID = 'math-review-decision-inline';
 
 let roundMenuOpen = false;
 let renderTimer = null;
+let lastRootBox = null;
 
 function toNumber(value, fallback = 1) {
   const n = Number(value);
@@ -27,6 +29,18 @@ function isElementVisible(el) {
   const rect = el.getBoundingClientRect();
   const style = window.getComputedStyle(el);
   return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+}
+
+function buttonText(button) {
+  return (button?.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+function safeParseJson(raw) {
+  try {
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
 }
 
 function getSelectedRound(subjectId) {
@@ -47,57 +61,11 @@ function getRoundName(roundNo) {
   return roundNo === 1 ? '第一轮刷题' : `第${roundNo}轮刷题`;
 }
 
-function safeParseJson(raw) {
-  try {
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function buttonText(button) {
-  return (button?.textContent || '').replace(/\s+/g, ' ').trim();
-}
-
-async function getActiveSubjectFromDom() {
-  const subjects = await db.subjects.toArray();
-  if (!subjects.length) return null;
-
-  const buttons = Array.from(document.querySelectorAll('button')).filter(isElementVisible);
-
-  for (const subject of subjects) {
-    const activeButton = buttons.find(button => {
-      const text = buttonText(button);
-      const cls = String(button.className || '');
-      return text === subject.name && (cls.includes('bg-blue-600') || cls.includes('text-white'));
-    });
-    if (activeButton) return subject;
-  }
-
-  const storedId = localStorage.getItem('mathNotebook.activeSubjectId');
-  const storedSubject = subjects.find(subject => String(subject.id) === String(storedId));
-  return storedSubject || subjects[0];
-}
-
-async function getRoundCount(subjectId) {
-  const items = await db.reviewRoundItems.where('subjectId').equals(subjectId).toArray();
-  const maxRound = items.reduce((max, item) => Math.max(max, toNumber(item.roundNo, 1)), 1);
-  return Math.max(1, maxRound);
-}
-
-async function countRoundItems(subjectId, roundNo) {
-  if (roundNo <= 1) {
-    return db.mistakes.where('subjectId').equals(subjectId).count();
-  }
-  return db.reviewRoundItems
-    .where('[subjectId+roundNo+order]')
-    .between([subjectId, roundNo, 0], [subjectId, roundNo, Number.MAX_SAFE_INTEGER])
-    .count();
-}
-
-function isMistakePageVisible() {
-  const bodyText = document.body?.innerText || '';
-  return bodyText.includes('错题本') || bodyText.includes('添加错题') || bodyText.includes('题目详情') || bodyText.includes('查看解析') || bodyText.includes('遮住答案');
+function isMistakeListPageVisible() {
+  return Boolean(
+    document.querySelector('input[placeholder*="搜索错题"]') ||
+    Array.from(document.querySelectorAll('button')).some(btn => isElementVisible(btn) && buttonText(btn) === '错题本')
+  );
 }
 
 function isDetailPageVisible() {
@@ -109,6 +77,70 @@ function isAnalysisOpen() {
   const bodyText = document.body?.innerText || '';
   const hasHideAnswerButton = Array.from(document.querySelectorAll('button')).some(btn => isElementVisible(btn) && buttonText(btn).includes('遮住答案'));
   return hasHideAnswerButton || (bodyText.includes('我的复盘') && bodyText.includes('标准解析'));
+}
+
+async function getSubjects() {
+  try {
+    return await db.subjects.toArray();
+  } catch {
+    return [];
+  }
+}
+
+function findVisibleSubjectButtons(subjects) {
+  const buttons = Array.from(document.querySelectorAll('button')).filter(isElementVisible);
+  return subjects
+    .map(subject => {
+      const candidates = buttons.filter(button => buttonText(button) === subject.name);
+      const active = candidates.find(button => {
+        const cls = String(button.className || '');
+        const aria = button.getAttribute('aria-selected');
+        return aria === 'true' || cls.includes('bg-blue-600') || cls.includes('text-white');
+      });
+      const button = active || candidates[0] || null;
+      return button ? { subject, button, active: Boolean(active) } : null;
+    })
+    .filter(Boolean);
+}
+
+async function getActiveSubjectFromDom() {
+  const subjects = await getSubjects();
+  if (!subjects.length) return null;
+
+  const subjectButtons = findVisibleSubjectButtons(subjects);
+  if (!subjectButtons.length) return null;
+
+  const active = subjectButtons.find(item => item.active);
+  if (active) return active.subject;
+
+  const storedId = localStorage.getItem('mathNotebook.activeSubjectId');
+  const stored = subjectButtons.find(item => String(item.subject.id) === String(storedId));
+  return stored?.subject || subjectButtons[0].subject;
+}
+
+async function getRoundCount(subjectId) {
+  if (!db.reviewRoundItems) return 1;
+  try {
+    const items = await db.reviewRoundItems.where('subjectId').equals(subjectId).toArray();
+    const maxRound = items.reduce((max, item) => Math.max(max, toNumber(item.roundNo, 1)), 1);
+    return Math.max(1, maxRound);
+  } catch {
+    return 1;
+  }
+}
+
+async function countRoundItems(subjectId, roundNo) {
+  try {
+    if (roundNo <= 1 || !db.reviewRoundItems) {
+      return db.mistakes.where('subjectId').equals(subjectId).count();
+    }
+    return db.reviewRoundItems
+      .where('[subjectId+roundNo+order]')
+      .between([subjectId, roundNo, 0], [subjectId, roundNo, Number.MAX_SAFE_INTEGER])
+      .count();
+  } catch {
+    return 0;
+  }
 }
 
 function showToast(message) {
@@ -143,46 +175,81 @@ function showToast(message) {
   }, 1800);
 }
 
-async function findSubjectButton(subject) {
-  const buttons = Array.from(document.querySelectorAll('button')).filter(isElementVisible);
-  const exactButtons = buttons.filter(button => buttonText(button) === subject.name);
-  return exactButtons.find(button => String(button.className || '').includes('bg-blue-600')) || exactButtons[0] || null;
-}
+async function calculateHeaderSlot(subject) {
+  const subjects = await getSubjects();
+  const subjectButtons = findVisibleSubjectButtons(subjects);
+  const current = subjectButtons.find(item => String(item.subject.id) === String(subject.id));
+  if (!current) return null;
 
-async function findSubjectToolbarMount(subject) {
-  const subjectButton = await findSubjectButton(subject);
-  if (!subjectButton) return null;
+  const currentRect = current.button.getBoundingClientRect();
+  const rowTop = currentRect.top;
+  const rowCenterY = currentRect.top + currentRect.height / 2;
 
-  let node = subjectButton.parentElement;
-  let best = null;
-  for (let i = 0; node && i < 5; i += 1) {
-    const text = (node.textContent || '').replace(/\s+/g, ' ');
-    const buttonCount = node.querySelectorAll('button').length;
-    const hasSubjectName = text.includes(subject.name);
-    const rect = node.getBoundingClientRect();
-    if (hasSubjectName && buttonCount >= 2 && rect.width > 240) {
-      best = node;
-    }
-    node = node.parentElement;
+  const sameRowButtons = Array.from(document.querySelectorAll('button'))
+    .filter(isElementVisible)
+    .map(button => ({ button, rect: button.getBoundingClientRect(), text: buttonText(button) }))
+    .filter(item => Math.abs((item.rect.top + item.rect.height / 2) - rowCenterY) <= 14);
+
+  const leftCluster = sameRowButtons.filter(item => item.rect.left < window.innerWidth * 0.55);
+  const rightCluster = sameRowButtons.filter(item => item.rect.left > window.innerWidth * 0.55);
+
+  const leftEdge = Math.max(
+    currentRect.right,
+    ...subjectButtons.map(item => item.button.getBoundingClientRect().right),
+    ...leftCluster.filter(item => item.text === '+' || item.text.includes('＋')).map(item => item.rect.right)
+  ) + 10;
+
+  const firstRightIconLeft = rightCluster.length
+    ? Math.min(...rightCluster.map(item => item.rect.left))
+    : window.innerWidth - 16;
+
+  let left = leftEdge;
+  let right = Math.max(12, window.innerWidth - firstRightIconLeft + 10);
+  let available = window.innerWidth - left - right;
+
+  // 小屏幕空间不够时，退到第二行但仍贴着顶部科目栏，不遮挡题目卡片。
+  if (available < 230) {
+    left = 12;
+    right = 12;
+    available = window.innerWidth - 24;
+    return {
+      top: Math.round(currentRect.bottom + 8),
+      left,
+      right,
+      compact: available < 360,
+      width: available
+    };
   }
 
-  return best || subjectButton.parentElement;
+  return {
+    top: Math.round(rowTop),
+    left: Math.round(left),
+    right: Math.round(right),
+    compact: available < 430,
+    width: available
+  };
 }
 
-function styleRoundRoot(root) {
+function styleRoundRoot(root, slot) {
+  lastRootBox = slot;
   root.style.cssText = [
-    'position:relative',
-    'z-index:20',
+    'position:fixed',
+    `top:${slot.top}px`,
+    `left:${slot.left}px`,
+    `right:${slot.right}px`,
+    'height:44px',
+    'z-index:99990',
     'display:flex',
     'align-items:center',
-    'gap:6px',
-    'margin-left:auto',
-    'flex-shrink:0',
+    'justify-content:flex-end',
+    'gap:8px',
     'padding:0',
     'border:0',
     'background:transparent',
     'box-shadow:none',
-    'min-width:0'
+    'pointer-events:none',
+    'min-width:0',
+    'max-width:100vw'
   ].join(';');
 }
 
@@ -200,7 +267,7 @@ function renderRoundMenu(root, subject, roundCount, selectedRound, counts) {
   }
 
   const rect = root.getBoundingClientRect();
-  const width = Math.min(260, Math.max(210, rect.width));
+  const width = Math.min(280, Math.max(220, Math.min(rect.width, 280)));
   const left = Math.max(8, Math.min(window.innerWidth - width - 8, rect.right - width));
   const top = Math.min(window.innerHeight - 80, rect.bottom + 8);
 
@@ -240,18 +307,26 @@ function renderRoundMenu(root, subject, roundCount, selectedRound, counts) {
 }
 
 async function renderRoundDirectory() {
-  if (!isMistakePageVisible()) {
+  if (!isMistakeListPageVisible() || isDetailPageVisible()) {
     document.getElementById(ROOT_ID)?.remove();
     document.getElementById(MENU_ID)?.remove();
     return;
   }
 
   const subject = await getActiveSubjectFromDom();
-  if (!subject) return;
+  if (!subject) {
+    document.getElementById(ROOT_ID)?.remove();
+    document.getElementById(MENU_ID)?.remove();
+    return;
+  }
   localStorage.setItem('mathNotebook.activeSubjectId', String(subject.id));
 
-  const mount = await findSubjectToolbarMount(subject);
-  if (!mount) return;
+  const slot = await calculateHeaderSlot(subject);
+  if (!slot) {
+    document.getElementById(ROOT_ID)?.remove();
+    document.getElementById(MENU_ID)?.remove();
+    return;
+  }
 
   const roundCount = await getRoundCount(subject.id);
   const selectedRound = Math.min(getSelectedRound(subject.id), roundCount);
@@ -263,25 +338,26 @@ async function renderRoundDirectory() {
   if (!root) {
     root = document.createElement('div');
     root.id = ROOT_ID;
+    document.body.appendChild(root);
   }
-  if (root.parentElement !== mount) {
-    mount.appendChild(root);
-  }
-  styleRoundRoot(root);
+  if (root.parentElement !== document.body) document.body.appendChild(root);
+  styleRoundRoot(root, slot);
 
   const counts = [];
   for (let i = 1; i <= roundCount; i += 1) {
     counts.push(await countRoundItems(subject.id, i));
   }
 
+  const compact = slot.compact;
   root.innerHTML = `
-    <button id="math-review-round-toggle" type="button" style="height:34px;border:0;background:#2563eb;color:#fff;border-radius:999px;padding:0 12px;font-size:13px;font-weight:900;white-space:nowrap;box-shadow:0 4px 12px rgba(37,99,235,.22);">
-      ${getRoundName(selectedRound)} ▾
+    <span style="pointer-events:auto;font-size:12px;color:#64748b;font-weight:900;white-space:nowrap;${compact ? 'display:none;' : ''}">刷题列表</span>
+    <button id="math-review-round-toggle" type="button" style="pointer-events:auto;height:34px;border:0;background:#2563eb;color:#fff;border-radius:999px;padding:0 12px;font-size:13px;font-weight:900;white-space:nowrap;box-shadow:0 4px 12px rgba(37,99,235,.22);">
+      ${compact ? `第${selectedRound}轮` : getRoundName(selectedRound)} ▾
     </button>
-    <span style="font-size:12px;color:#64748b;white-space:nowrap;display:inline-flex;align-items:center;">
+    <span style="pointer-events:auto;font-size:12px;color:#64748b;white-space:nowrap;display:inline-flex;align-items:center;font-weight:800;">
       ${counts[selectedRound - 1] || 0}题
     </span>
-    <button id="math-review-last-progress" type="button" ${lastProgress ? '' : 'disabled'} style="height:34px;border:0;border-radius:999px;padding:0 10px;font-size:12px;font-weight:800;white-space:nowrap;background:${lastProgress ? '#ecfdf5' : '#f1f5f9'};color:${lastProgress ? '#047857' : '#94a3b8'};">
+    <button id="math-review-last-progress" type="button" ${lastProgress ? '' : 'disabled'} style="pointer-events:auto;height:34px;border:0;border-radius:999px;padding:0 10px;font-size:12px;font-weight:800;white-space:nowrap;background:${lastProgress ? '#ecfdf5' : '#f1f5f9'};color:${lastProgress ? '#047857' : '#94a3b8'};">
       ${lastProgress ? '上次刷到' : '暂无进度'}
     </button>
   `;
@@ -320,7 +396,11 @@ async function getCurrentMistakeFromActiveKey() {
   if (!idRaw) return null;
   const asNumber = Number(idRaw);
   const id = Number.isFinite(asNumber) ? asNumber : idRaw;
-  return db.mistakes.get(id);
+  try {
+    return await db.mistakes.get(id);
+  } catch {
+    return null;
+  }
 }
 
 async function markProgress(mistake, action) {
@@ -337,6 +417,11 @@ async function markProgress(mistake, action) {
 }
 
 async function addToNextRound(mistake) {
+  if (!db.reviewRoundItems) {
+    showToast('复盘轮次表未初始化，请确认已上传完整补丁');
+    return;
+  }
+
   const currentRound = getSelectedRound(mistake.subjectId);
   const nextRound = currentRound + 1;
 
@@ -446,11 +531,11 @@ async function renderDecisionBar() {
   const nextRound = roundNo + 1;
 
   bar.innerHTML = `
-    <button id="math-review-add-next" type="button" style="height:40px;border:0;border-radius:999px;background:#2563eb;color:#fff;padding:0 12px;font-size:12px;font-weight:900;box-shadow:0 4px 12px rgba(37,99,235,.22);line-height:1.1;">
-      加入下一轮<br><span style="font-size:10px;font-weight:700;opacity:.9;">第${nextRound}轮</span>
+    <button id="math-review-add-next" type="button" style="height:34px;border:0;border-radius:999px;background:#2563eb;color:#fff;padding:0 11px;font-size:12px;font-weight:900;box-shadow:0 4px 12px rgba(37,99,235,.22);line-height:1;">
+      加入第${nextRound}轮
     </button>
-    <button id="math-review-mastered" type="button" style="height:40px;border:0;border-radius:999px;background:#dcfce7;color:#166534;padding:0 12px;font-size:12px;font-weight:900;line-height:1.1;">
-      已掌握<br><span style="font-size:10px;font-weight:700;opacity:.85;">记录刷过</span>
+    <button id="math-review-mastered" type="button" style="height:34px;border:0;border-radius:999px;background:#dcfce7;color:#166534;padding:0 11px;font-size:12px;font-weight:900;line-height:1;">
+      已掌握
     </button>
   `;
 
@@ -466,7 +551,6 @@ async function renderDecisionBar() {
     if (current) await markMastered(current);
   });
 
-  // 让原底部按钮栏横向可滚动，避免小屏幕被挤坏。
   toolbar.style.maxWidth = 'calc(100vw - 16px)';
   toolbar.style.overflowX = 'auto';
   toolbar.style.webkitOverflowScrolling = 'touch';
@@ -514,6 +598,9 @@ function startReviewRoundsPatch() {
       menu?.remove();
     }
   }, true);
+
+  window.addEventListener('resize', scheduleRender);
+  window.addEventListener('scroll', scheduleRender, true);
 
   const observer = new MutationObserver(scheduleRender);
   observer.observe(document.body, { childList: true, subtree: true, characterData: true });
