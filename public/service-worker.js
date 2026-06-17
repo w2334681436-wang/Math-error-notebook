@@ -1,7 +1,7 @@
-// Service Worker: 强制刷新缓存版
+// Service Worker: 修复刷题列表抖动 + 答案解析预览边框样式，强制刷新缓存版
 // 修改 CACHE_NAME 后，浏览器会安装新 SW，并清理旧缓存。
 // build 时 update-sw.js 还会再次把这里替换成时间戳版本。
-const CACHE_NAME = 'math-notebook-cache-v202606172045';
+const CACHE_NAME = 'math-notebook-cache-v202606172140';
 
 const APP_SHELL_FILES = [
   '/',
@@ -41,7 +41,7 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(event.request.url);
 
-  // HTML 导航请求必须网络优先，否则用户会一直看到旧页面。
+  // HTML 导航请求网络优先，避免一直看到上一版布局缓存。
   if (event.request.mode === 'navigate' || url.pathname === '/' || url.pathname.endsWith('/index.html')) {
     event.respondWith(
       fetch(event.request)
