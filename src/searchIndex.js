@@ -1,5 +1,4 @@
 // src/searchIndex.js
-
 export const MISTAKE_PAGE_SIZE = 20;
 
 export function normalizeSearchText(value) {
@@ -15,11 +14,6 @@ function toTime(value) {
   return Number.isFinite(time) ? time : Date.now();
 }
 
-function getReviewCountSafe(logs) {
-  if (!Array.isArray(logs)) return 0;
-  return new Set(logs.map(ts => new Date(ts).toDateString())).size;
-}
-
 function getQuestionImages(mistake) {
   return mistake?.questionImages || (mistake?.questionImg ? [mistake.questionImg] : []);
 }
@@ -28,13 +22,32 @@ function getAnalysisImages(mistake) {
   return mistake?.analysisImages || (mistake?.analysisImg ? [mistake.analysisImg] : []);
 }
 
+function getSelectedRoundNo(subjectId) {
+  if (typeof localStorage === 'undefined') return 1;
+  const raw = localStorage.getItem(`mathNotebook.selectedReviewRound.${subjectId}`);
+  const n = Number(raw || 1);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+}
+
+function getPendingOpenId(subjectId, roundNo) {
+  if (typeof localStorage === 'undefined') return null;
+  const raw = localStorage.getItem('mathNotebook.pendingOpenMistake');
+  if (!raw) return null;
+  try {
+    const data = JSON.parse(raw);
+    if (String(data.subjectId) === String(subjectId) && Number(data.roundNo) === Number(roundNo)) {
+      return data.mistakeId;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 // 适配中文、英文、数字搜索。
-// 中文：生成单字、二字、三字 token，例如“极限计算”会有“极限”“限计”“计算”。
-// 英文/数字：按词生成 token，例如 cache、2026、chapter4。
 export function createSearchTokens(text) {
   const normalized = normalizeSearchText(text);
   const tokens = new Set();
-
   if (!normalized) return [];
 
   const words = normalized.match(/[a-z0-9_./+-]+/g) || [];
@@ -43,9 +56,7 @@ export function createSearchTokens(text) {
   }
 
   const cjk = normalized.replace(/[^\u4e00-\u9fff]/g, '');
-  for (let i = 0; i < cjk.length; i++) {
-    tokens.add(cjk[i]);
-  }
+  for (let i = 0; i < cjk.length; i++) tokens.add(cjk[i]);
 
   for (let n = 2; n <= 3; n++) {
     for (let i = 0; i <= cjk.length - n; i++) {
@@ -73,22 +84,18 @@ function cardMatchesKeyword(card, keyword) {
   if (queryTokens.length === 0) {
     return createSearchTokens(q).every(t => card.tokens?.includes(t));
   }
-
   return queryTokens.every(t => card.tokens?.includes(t));
 }
 
 // 从完整错题生成轻量卡片。
-// 注意：这里不保存 base64 大图，只保存图片数量、复盘状态、搜索字段。
+// 新复盘系统不再使用 reviewLogs/reviewCount，因此 reviewCount 永远为 0。
 export function buildMistakeCard(mistake) {
   const questionImages = getQuestionImages(mistake);
   const analysisImages = getAnalysisImages(mistake);
-
   const createdAtMs = toTime(mistake.createdAt);
   const updatedAtMs = toTime(mistake.updatedAt || mistake.createdAt);
-
   const title = mistake.title || '未命名错题';
   const dateText = new Date(createdAtMs).toLocaleDateString();
-
   const searchText = normalizeSearchText([
     title,
     mistake.reflection || '',
@@ -105,14 +112,12 @@ export function buildMistakeCard(mistake) {
     createdAt: mistake.createdAt || new Date(createdAtMs),
     createdAtMs,
     updatedAtMs,
-
     imageCount: questionImages.length,
     analysisImageCount: analysisImages.length,
     hasReflection: Boolean(normalizeSearchText(mistake.reflection)),
     hasAnalysis: Boolean(normalizeSearchText(mistake.analysisText) || analysisImages.length > 0),
     isMastered: Boolean(mistake.isMastered),
-    reviewCount: getReviewCountSafe(mistake.reviewLogs),
-
+    reviewCount: 0,
     searchText,
     tokens: createSearchTokens(searchText)
   };
@@ -126,9 +131,7 @@ export async function rebuildAllMistakeCards(db) {
 
   await db.transaction('rw', db.mistakeCards, async () => {
     await db.mistakeCards.clear();
-    if (cards.length > 0) {
-      await db.mistakeCards.bulkPut(cards);
-    }
+    if (cards.length > 0) await db.mistakeCards.bulkPut(cards);
   });
 
   return cards.length;
@@ -136,26 +139,14 @@ export async function rebuildAllMistakeCards(db) {
 
 export async function refreshMistakeCard(db, mistakeId) {
   const mistake = await db.mistakes.get(mistakeId);
-
   if (!mistake) {
     await db.mistakeCards.delete(mistakeId);
     return;
   }
-
   await db.mistakeCards.put(buildMistakeCard(mistake));
 }
 
-export async function queryMistakeCards(db, {
-  subjectId,
-  keyword = '',
-  offset = 0,
-  limit = MISTAKE_PAGE_SIZE
-}) {
-  if (!subjectId) return [];
-
-  const q = normalizeSearchText(keyword);
-
-  // 普通列表：直接按 subjectId + createdAtMs 走复合索引分页。
+async function queryFirstRoundCards(db, subjectId, q, offset, limit) {
   if (!q) {
     return db.mistakeCards
       .where('[subjectId+createdAtMs]')
@@ -166,20 +157,12 @@ export async function queryMistakeCards(db, {
       .toArray();
   }
 
-  // 搜索：查轻量索引表，不查原始大图表。
   const anchor = pickBestToken(q);
-
   let candidates = [];
   if (anchor) {
-    candidates = await db.mistakeCards
-      .where('tokens')
-      .equals(anchor)
-      .toArray();
+    candidates = await db.mistakeCards.where('tokens').equals(anchor).toArray();
   } else {
-    candidates = await db.mistakeCards
-      .where('subjectId')
-      .equals(subjectId)
-      .toArray();
+    candidates = await db.mistakeCards.where('subjectId').equals(subjectId).toArray();
   }
 
   return candidates
@@ -187,4 +170,63 @@ export async function queryMistakeCards(db, {
     .filter(card => cardMatchesKeyword(card, q))
     .sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0))
     .slice(offset, offset + limit);
+}
+
+async function queryRoundCards(db, subjectId, roundNo, q, offset, limit) {
+  const items = await db.reviewRoundItems
+    .where('[subjectId+roundNo+order]')
+    .between([subjectId, roundNo, 0], [subjectId, roundNo, Number.MAX_SAFE_INTEGER])
+    .toArray();
+
+  if (items.length === 0) return [];
+
+  const cards = (await db.mistakeCards.bulkGet(items.map(item => item.mistakeId)))
+    .filter(Boolean)
+    .filter(card => card.subjectId === subjectId)
+    .filter(card => cardMatchesKeyword(card, q));
+
+  const orderMap = new Map(items.map((item, index) => [item.mistakeId, item.order || index]));
+  cards.sort((a, b) => (orderMap.get(a.id) || 0) - (orderMap.get(b.id) || 0));
+
+  return cards.slice(offset, offset + limit);
+}
+
+function movePendingCardToTop(cards, pendingId) {
+  if (!pendingId || !Array.isArray(cards) || cards.length === 0) return cards;
+  const index = cards.findIndex(card => String(card.id) === String(pendingId));
+  if (index <= 0) return cards;
+  const copy = [...cards];
+  const [target] = copy.splice(index, 1);
+  copy.unshift(target);
+  return copy;
+}
+
+export async function queryMistakeCards(db, { subjectId, keyword = '', offset = 0, limit = MISTAKE_PAGE_SIZE }) {
+  if (!subjectId) return [];
+
+  const q = normalizeSearchText(keyword);
+  const roundNo = getSelectedRoundNo(subjectId);
+  const pendingId = getPendingOpenId(subjectId, roundNo);
+
+  let cards = [];
+  if (roundNo <= 1) {
+    cards = await queryFirstRoundCards(db, subjectId, q, offset, limit);
+  } else {
+    cards = await queryRoundCards(db, subjectId, roundNo, q, offset, limit);
+  }
+
+  // “上次刷到”跳转时，把目标卡片提到当前列表第一项，避免分页未加载导致找不到。
+  if (offset === 0 && pendingId) {
+    const exists = cards.some(card => String(card.id) === String(pendingId));
+    if (!exists) {
+      const pendingCard = await db.mistakeCards.get(pendingId);
+      if (pendingCard && pendingCard.subjectId === subjectId && cardMatchesKeyword(pendingCard, q)) {
+        cards = [pendingCard, ...cards.filter(card => String(card.id) !== String(pendingId))].slice(0, limit);
+      }
+    } else {
+      cards = movePendingCardToTop(cards, pendingId);
+    }
+  }
+
+  return cards;
 }
