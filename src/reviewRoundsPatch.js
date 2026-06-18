@@ -4,6 +4,7 @@
 // 2. 只在主页错题列表显示轮次目录，避免遮挡题目详情。
 // 3. “加入下一轮/已掌握”只在打开解析后出现，并插入原详情页底部按钮栏。
 // 4. 打开题目/查看解析不记录刷过；只有点击两个决策按钮才记录。
+// 5. 防止热更新/重复挂载/DOM 重绘导致“加入下一轮/已掌握”按钮重复出现。
 import { db } from './db';
 import { refreshMistakeCard } from './searchIndex';
 
@@ -14,6 +15,7 @@ const PENDING_OPEN_KEY = 'mathNotebook.pendingOpenMistake';
 const ROOT_ID = 'math-review-rounds-root';
 const MENU_ID = 'math-review-round-menu-floating';
 const DECISION_BAR_ID = 'math-review-decision-inline';
+const INSTANCE_KEY = '__mathReviewRoundsPatchStartedV346';
 
 let roundMenuOpen = false;
 let renderTimer = null;
@@ -519,60 +521,108 @@ function styleDecisionBar(bar) {
   ].join(';');
 }
 
+function isReviewDecisionButton(button) {
+  const text = buttonText(button);
+  return (
+    button?.id === 'math-review-add-next' ||
+    button?.id === 'math-review-mastered' ||
+    button?.dataset?.reviewDecisionButton === 'true' ||
+    /^加入第\d+轮$/.test(text) ||
+    text === '已掌握'
+  );
+}
+
+function removeDecisionElement(el) {
+  if (!el) return;
+  const wrapper = el.closest?.(`#${DECISION_BAR_ID}`);
+  if (wrapper) {
+    wrapper.remove();
+    return;
+  }
+  const parent = el.parentElement;
+  el.remove();
+  if (parent && parent !== document.body && !parent.textContent.trim() && parent.children.length === 0) {
+    parent.remove();
+  }
+}
+
+function cleanupDuplicateDecisionButtons(toolbar = null, keepBar = null) {
+  const scope = toolbar || document;
+
+  // 清理多余容器；保留当前正在使用的这一组，避免定时渲染导致按钮闪烁或再次触发 DOM 循环。
+  Array.from(scope.querySelectorAll?.(`#${DECISION_BAR_ID}`) || [])
+    .filter(node => node !== keepBar)
+    .forEach(node => node.remove());
+
+  // 兜底清理没有包在当前容器里的历史按钮，避免出现两组“加入第 N 轮 / 已掌握”。
+  Array.from(scope.querySelectorAll?.('button') || [])
+    .filter(isReviewDecisionButton)
+    .filter(button => !keepBar?.contains(button))
+    .forEach(removeDecisionElement);
+}
+
 async function renderDecisionBar() {
   let bar = document.getElementById(DECISION_BAR_ID);
 
   if (!isDetailPageVisible() || !isAnalysisOpen()) {
+    cleanupDuplicateDecisionButtons(document);
     bar?.remove();
     return;
   }
 
   const mistake = await getCurrentMistakeFromActiveKey();
   if (!mistake) {
-    bar?.remove();
+    cleanupDuplicateDecisionButtons(document);
     return;
   }
 
   const toolbar = findDetailToolbar();
   const analysisButton = findAnalysisButton();
   if (!toolbar || !analysisButton) {
-    bar?.remove();
+    cleanupDuplicateDecisionButtons(document);
     return;
   }
 
-  if (!bar) {
-    bar = document.createElement('span');
-    bar.id = DECISION_BAR_ID;
-  }
+  const existingBars = Array.from(toolbar.querySelectorAll(`#${DECISION_BAR_ID}`));
+  bar = existingBars[0] || document.createElement('span');
+  bar.id = DECISION_BAR_ID;
+  bar.dataset.reviewDecisionBar = 'true';
 
-  if (bar.parentElement !== toolbar) {
+  // 每次渲染前只清理多余历史按钮，保留当前 bar，保证底部工具栏永远只有一组且不闪烁。
+  cleanupDuplicateDecisionButtons(toolbar, bar);
+
+  if (bar.parentElement !== toolbar || analysisButton.nextElementSibling !== bar) {
     analysisButton.insertAdjacentElement('afterend', bar);
   }
   styleDecisionBar(bar);
 
   const roundNo = getSelectedRound(mistake.subjectId);
   const nextRound = roundNo + 1;
+  const decisionState = JSON.stringify({ mistakeId: mistake.id, nextRound });
 
-  bar.innerHTML = `
-    <button id="math-review-add-next" type="button" style="height:34px;border:0;border-radius:999px;background:#2563eb;color:#fff;padding:0 11px;font-size:12px;font-weight:900;box-shadow:0 4px 12px rgba(37,99,235,.22);line-height:1;">
-      加入第${nextRound}轮
-    </button>
-    <button id="math-review-mastered" type="button" style="height:34px;border:0;border-radius:999px;background:#dcfce7;color:#166534;padding:0 11px;font-size:12px;font-weight:900;line-height:1;">
-      已掌握
-    </button>
-  `;
+  if (bar.dataset.reviewDecisionState !== decisionState) {
+    bar.dataset.reviewDecisionState = decisionState;
+    bar.innerHTML = `
+      <button id="math-review-add-next" data-review-decision-button="true" type="button" style="height:34px;border:0;border-radius:999px;background:#2563eb;color:#fff;padding:0 11px;font-size:12px;font-weight:900;box-shadow:0 4px 12px rgba(37,99,235,.22);line-height:1;">
+        加入第${nextRound}轮
+      </button>
+      <button id="math-review-mastered" data-review-decision-button="true" type="button" style="height:34px;border:0;border-radius:999px;background:#dcfce7;color:#166534;padding:0 11px;font-size:12px;font-weight:900;line-height:1;">
+        已掌握
+      </button>
+    `;
 
-  bar.querySelector('#math-review-add-next')?.addEventListener('click', async (event) => {
-    event.stopPropagation();
-    const current = await getCurrentMistakeFromActiveKey();
-    if (current) await addToNextRound(current);
-  });
+    bar.querySelector('#math-review-add-next')?.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const current = await getCurrentMistakeFromActiveKey();
+      if (current) await addToNextRound(current);
+    });
 
-  bar.querySelector('#math-review-mastered')?.addEventListener('click', async (event) => {
-    event.stopPropagation();
-    const current = await getCurrentMistakeFromActiveKey();
-    if (current) await markMastered(current);
-  });
+    bar.querySelector('#math-review-mastered')?.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const current = await getCurrentMistakeFromActiveKey();
+      if (current) await markMastered(current);
+    });
+  }
 
   toolbar.style.maxWidth = 'calc(100vw - 16px)';
   toolbar.style.overflowX = 'auto';
@@ -611,6 +661,12 @@ function scheduleRender() {
 }
 
 function startReviewRoundsPatch() {
+  if (window[INSTANCE_KEY]) {
+    cleanupDuplicateDecisionButtons(document);
+    scheduleRender();
+    return;
+  }
+  window[INSTANCE_KEY] = true;
   document.addEventListener('click', captureListOpenClick, true);
   document.addEventListener('click', (event) => {
     const root = document.getElementById(ROOT_ID);
