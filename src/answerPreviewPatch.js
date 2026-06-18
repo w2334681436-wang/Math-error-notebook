@@ -1,12 +1,17 @@
 // src/answerPreviewPatch.js
 // 只美化“题目详情 -> 查看解析”后的答案/复盘 Markdown 预览。
-// 不处理知识库、不处理主页、不处理编辑器、不处理全局 Markdown，避免把其他页面改成 ChatGPT 风格。
+// 修复：解析预览页滚到底部后，因为反复 cleanup/re-mark 引发布局高度变化而弹回上方。
+// 原则：只在目标变化时增量标记；隐藏解析/离开详情页时再清理；不再每次 DOM 变化都清空重挂样式。
 
 const CARD_CLASS = 'math-answer-card';
 const PREVIEW_CLASS = 'math-answer-preview';
 const TARGET_TITLES = ['我的复盘', '标准解析'];
+const MARK_ATTR = 'data-answer-preview-patch';
+const PATCH_VERSION = '3.4.7';
 
 let timer = null;
+let lastOpenState = false;
+let lastSignature = '';
 
 function textOf(el) {
   return (el?.textContent || '').replace(/\s+/g, ' ').trim();
@@ -20,14 +25,14 @@ function isVisible(el) {
 }
 
 function isForbidden(el) {
-  return Boolean(el?.matches?.('html, body, #root, nav, header, footer, button, input, textarea, select, form'));
+  return Boolean(el?.matches?.('html, body, #root, nav, header, footer, button, input, textarea, select'));
 }
 
 function isDetailAnalysisOpen() {
   const bodyText = textOf(document.body);
   if (!bodyText.includes('标准解析') && !bodyText.includes('我的复盘')) return false;
 
-  // 只有点开“查看解析”后，按钮才会变成“遮住答案”；避免在编辑页或列表页误加样式。
+  // 只有点开“查看解析”后，按钮通常会变成“遮住答案”；避免在编辑页或列表页误加样式。
   const hasHideAnswerButton = Array.from(document.querySelectorAll('button'))
     .some(btn => isVisible(btn) && /遮住答案/.test(textOf(btn)));
 
@@ -85,9 +90,26 @@ function hasMarkdownBlocks(el) {
   return Boolean(el.querySelector?.('p,ul,ol,pre,table,blockquote,.katex,.katex-display,code,h1,h2,h3,h4,h5,h6'));
 }
 
+function markEl(el, className, type) {
+  if (!el || !(el instanceof HTMLElement)) return false;
+  let changed = false;
+  if (!el.classList.contains(className)) {
+    el.classList.add(className);
+    changed = true;
+  }
+  if (el.getAttribute(MARK_ATTR) !== type) {
+    el.setAttribute(MARK_ATTR, type);
+    changed = true;
+  }
+  if (el.dataset.answerPreviewVersion !== PATCH_VERSION) {
+    el.dataset.answerPreviewVersion = PATCH_VERSION;
+  }
+  return changed;
+}
+
 function markPreviewInsideCard(card, titleEl) {
-  if (!card) return;
-  card.classList.add(CARD_CLASS);
+  if (!card) return 0;
+  let changedCount = markEl(card, CARD_CLASS, 'card') ? 1 : 0;
 
   const descendants = Array.from(card.querySelectorAll('div,section,article'))
     .filter(isVisible)
@@ -101,10 +123,9 @@ function markPreviewInsideCard(card, titleEl) {
       return hasMarkdownBlocks(el) || text.length >= 8;
     });
 
-  // 选择最靠近内容的容器：如果没有更小容器，就退回卡片本身。
   if (descendants.length === 0) {
-    card.classList.add(PREVIEW_CLASS);
-    return;
+    changedCount += markEl(card, PREVIEW_CLASS, 'card preview') ? 1 : 0;
+    return changedCount;
   }
 
   const previewTargets = descendants.filter(el => {
@@ -113,43 +134,107 @@ function markPreviewInsideCard(card, titleEl) {
   });
 
   for (const el of previewTargets.slice(0, 4)) {
-    el.classList.add(PREVIEW_CLASS);
+    changedCount += markEl(el, PREVIEW_CLASS, 'preview') ? 1 : 0;
   }
+
+  return changedCount;
 }
 
 function cleanup() {
-  document.querySelectorAll(`.${CARD_CLASS}`).forEach(el => el.classList.remove(CARD_CLASS));
-  document.querySelectorAll(`.${PREVIEW_CLASS}`).forEach(el => el.classList.remove(PREVIEW_CLASS));
+  document.querySelectorAll(`[${MARK_ATTR}]`).forEach(el => {
+    el.classList.remove(CARD_CLASS, PREVIEW_CLASS);
+    el.removeAttribute(MARK_ATTR);
+    if (el.dataset) delete el.dataset.answerPreviewVersion;
+  });
+  lastSignature = '';
+}
+
+function currentSignature(titleElements) {
+  return titleElements.map(el => {
+    const rect = el.getBoundingClientRect();
+    return `${textOf(el)}:${Math.round(rect.top)}:${Math.round(rect.left)}:${Math.round(rect.width)}:${textOf(el.parentElement).slice(0, 40)}`;
+  }).join('|');
+}
+
+function preserveScrollIfNeeded(beforeY, beforeHeight, changedCount) {
+  if (!changedCount) return;
+
+  // 只在用户已经接近底部时保护滚动位置，避免“最底部弹回上方”。
+  const doc = document.documentElement;
+  const beforeDistanceToBottom = beforeHeight - beforeY - window.innerHeight;
+  const wasNearBottom = beforeDistanceToBottom < 220;
+  if (!wasNearBottom) return;
+
+  window.requestAnimationFrame(() => {
+    const afterHeight = doc.scrollHeight;
+    const afterDistanceToBottom = afterHeight - window.scrollY - window.innerHeight;
+
+    // 如果样式标记导致页面高度变化，就保持用户仍停留在底部附近。
+    if (afterDistanceToBottom > beforeDistanceToBottom + 80) {
+      const targetY = Math.max(0, afterHeight - window.innerHeight - Math.max(0, beforeDistanceToBottom));
+      window.scrollTo({ top: targetY, left: window.scrollX, behavior: 'auto' });
+    }
+  });
 }
 
 function markAnswerPreview() {
-  cleanup();
+  const open = isDetailAnalysisOpen();
 
-  if (!isDetailAnalysisOpen()) return;
+  if (!open) {
+    if (lastOpenState) cleanup();
+    lastOpenState = false;
+    return;
+  }
 
   const titleElements = findTitleElements();
+  const signature = currentSignature(titleElements);
+
+  // 同一批目标已经处理过，不再反复 cleanup/re-mark，解决滚到底部弹回。
+  if (open === lastOpenState && signature && signature === lastSignature) return;
+
+  const beforeY = window.scrollY;
+  const beforeHeight = document.documentElement.scrollHeight;
+  let changedCount = 0;
+
   for (const titleEl of titleElements) {
     const card = findAnswerCard(titleEl);
-    markPreviewInsideCard(card, titleEl);
+    changedCount += markPreviewInsideCard(card, titleEl);
   }
+
+  lastOpenState = true;
+  lastSignature = signature;
+  preserveScrollIfNeeded(beforeY, beforeHeight, changedCount);
 }
 
 function scheduleMark() {
   window.clearTimeout(timer);
-  timer = window.setTimeout(markAnswerPreview, 80);
+  timer = window.setTimeout(markAnswerPreview, 120);
 }
 
 if (typeof window !== 'undefined') {
   window.addEventListener('load', scheduleMark);
   window.addEventListener('resize', scheduleMark);
+  window.addEventListener('orientationchange', scheduleMark);
   window.addEventListener('click', scheduleMark, true);
   window.addEventListener('input', scheduleMark, true);
 
-  const observer = new MutationObserver(scheduleMark);
+  const observer = new MutationObserver((mutations) => {
+    // 自己刚加的 class / data 属性不再触发二次处理，减少抖动和滚动跳动。
+    const onlySelfPatch = mutations.every(mutation => {
+      if (mutation.type === 'attributes') {
+        return mutation.attributeName === 'class' || mutation.attributeName === MARK_ATTR || mutation.attributeName === 'data-answer-preview-version';
+      }
+      return false;
+    });
+    if (!onlySelfPatch) scheduleMark();
+  });
+
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true,
-    characterData: true
+    characterData: false,
+    attributes: true,
+    attributeFilter: ['class', MARK_ATTR, 'data-answer-preview-version']
   });
 
   scheduleMark();
