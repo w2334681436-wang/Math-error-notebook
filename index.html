@@ -5,17 +5,19 @@
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta name="theme-color" content="#ffffff" />
-    <title>错题本</title> </head>
+    <title>错题本</title>
+  </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script defer src="/drag-image-upload.js"></script>
     <script>
       // 注册手动版 Service Worker
       if ('serviceWorker' in navigator) {
-          // 确保在生产环境或本地预览时注册
-          navigator.serviceWorker.register('/service-worker.js')
-            .then(reg => console.log('SW Registered!', reg))
-            .catch(error => console.error('SW Error:', error));
+        // 确保在生产环境或本地预览时注册
+        navigator.serviceWorker.register('/service-worker.js')
+          .then(reg => console.log('SW Registered!', reg))
+          .catch(error => console.error('SW Error:', error));
       }
     </script>
   </body>
