@@ -373,73 +373,176 @@ function findUploadContainer(input) {
   return input.parentElement;
 }
 
+function isBackupPickerElement(target) {
+  return Boolean(target?.closest?.('[data-role="backup-image-picker"]'));
+}
+
+function removeLegacyBackupButtons(container) {
+  if (!container?.parentElement) return;
+
+  container.parentElement
+    .querySelectorAll('[data-role="backup-image-picker"]')
+    .forEach(element => {
+      if (element.getAttribute('data-mn-backup-image-icon') !== '1') {
+        element.remove();
+      }
+    });
+}
+
+function assignFilesToInput(targetInput, fileList) {
+  if (!targetInput || !fileList || fileList.length === 0) return false;
+
+  try {
+    targetInput.files = fileList;
+    return targetInput.files?.length === fileList.length;
+  } catch (_) {
+    // 某些浏览器不允许直接赋值 FileList，下面用 DataTransfer 兜底。
+  }
+
+  try {
+    const dataTransfer = new DataTransfer();
+    Array.from(fileList).forEach(file => dataTransfer.items.add(file));
+    targetInput.files = dataTransfer.files;
+    return targetInput.files?.length === fileList.length;
+  } catch (_) {
+    return false;
+  }
+}
+
+function dispatchNativeFileChange(input) {
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 function createBackupImageButton(input, container) {
   if (!container || !input) return;
   if (!(container.textContent || '').includes('添加图片')) return;
-  if (container.getAttribute(IMAGE_BACKUP_BUTTON_PATCHED) === '1') return;
+
+  removeLegacyBackupButtons(container);
+
+  const oldIcon = container.querySelector('[data-role="backup-image-picker"][data-mn-backup-image-icon="1"]');
+  if (oldIcon) return;
 
   container.setAttribute(IMAGE_BACKUP_BUTTON_PATCHED, '1');
+  const currentPosition = window.getComputedStyle(container).position;
+  if (currentPosition === 'static') container.style.position = 'relative';
 
-  const backupButton = document.createElement('button');
-  backupButton.type = 'button';
-  backupButton.textContent = '+ 备用添加图片';
-  backupButton.title = '备用入口，支持一次选择多张图片';
-  backupButton.setAttribute('data-role', 'backup-image-picker');
-  Object.assign(backupButton.style, buttonStyle({
-    minHeight: '92px',
-    width: '100%',
-    borderRadius: '14px',
-    border: '1px dashed #93c5fd',
-    background: '#eff6ff',
+  const picker = document.createElement('label');
+  picker.title = '备用添加图片，支持一次选择多张图片';
+  picker.setAttribute('data-role', 'backup-image-picker');
+  picker.setAttribute('data-mn-backup-image-icon', '1');
+  Object.assign(picker.style, {
+    position: 'absolute',
+    top: '10px',
+    right: '10px',
+    zIndex: '60',
+    width: '34px',
+    height: '34px',
+    borderRadius: '999px',
+    border: '1px solid rgba(37, 99, 235, 0.22)',
+    background: 'rgba(255, 255, 255, 0.88)',
     color: '#2563eb',
-    boxShadow: 'none',
-    fontSize: '13px',
-    display: 'flex',
+    display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
-    textAlign: 'center',
-    whiteSpace: 'normal',
-  }));
+    cursor: 'pointer',
+    boxShadow: '0 4px 12px rgba(15, 23, 42, 0.10)',
+    WebkitTapHighlightColor: 'transparent',
+    userSelect: 'none',
+    backdropFilter: 'blur(6px)',
+  });
 
-  backupButton.addEventListener('pointerdown', event => event.stopPropagation(), true);
-  backupButton.addEventListener('mousedown', event => event.stopPropagation(), true);
-  backupButton.addEventListener('touchstart', event => event.stopPropagation(), { capture: true, passive: true });
-  backupButton.addEventListener('click', event => {
-    event.preventDefault();
-    event.stopPropagation();
+  const icon = document.createElement('span');
+  icon.textContent = '＋';
+  Object.assign(icon.style, {
+    fontSize: '22px',
+    lineHeight: '1',
+    fontWeight: '700',
+    transform: 'translateY(-1px)',
+    pointerEvents: 'none',
+  });
+
+  const backupInput = document.createElement('input');
+  backupInput.type = 'file';
+  backupInput.accept = input.getAttribute('accept') || 'image/*';
+  backupInput.multiple = true;
+  backupInput.setAttribute('aria-label', '备用添加图片');
+  Object.assign(backupInput.style, {
+    position: 'absolute',
+    width: '1px',
+    height: '1px',
+    opacity: '0',
+    overflow: 'hidden',
+    pointerEvents: 'none',
+  });
+
+  // 不让父级上传卡片的捕获点击逻辑抢走备用按钮的点击。
+  ['pointerdown', 'mousedown', 'touchstart', 'click'].forEach(type => {
+    picker.addEventListener(type, event => {
+      event.stopPropagation();
+    }, { capture: true, passive: type === 'touchstart' });
+  });
+
+  picker.addEventListener('click', () => {
+    backupInput.value = '';
+  });
+
+  backupInput.addEventListener('change', () => {
+    const files = backupInput.files;
+    if (!files || files.length === 0) return;
+
     input.setAttribute('multiple', 'multiple');
     input.value = '';
-    input.click();
-  }, true);
 
-  container.insertAdjacentElement('afterend', backupButton);
+    const assigned = assignFilesToInput(input, files);
+    if (assigned) {
+      dispatchNativeFileChange(input);
+      showToast(files.length > 1 ? `已选择 ${files.length} 张图片` : '已选择图片');
+    } else {
+      // 极端浏览器如果禁止转交 FileList，就退回到原始 input 的选择窗口。
+      showToast('请在弹出的窗口里重新选择图片');
+      window.setTimeout(() => {
+        input.value = '';
+        input.click();
+      }, 0);
+    }
+
+    backupInput.value = '';
+  });
+
+  picker.appendChild(icon);
+  picker.appendChild(backupInput);
+  container.appendChild(picker);
 }
 
 function patchImageInputs() {
   document.querySelectorAll('input[type="file"][accept*="image"]').forEach(input => {
-    if (input.getAttribute(IMAGE_INPUT_PATCHED) === '1') return;
-    input.setAttribute(IMAGE_INPUT_PATCHED, '1');
-
+    const alreadyPatched = input.getAttribute(IMAGE_INPUT_PATCHED) === '1';
     const container = findUploadContainer(input);
     const isMistakeImageButton = (container?.textContent || '').includes('添加图片');
+
     if (isMistakeImageButton) input.setAttribute('multiple', 'multiple');
 
-    Object.assign(input.style, {
-      position: 'absolute',
-      inset: '0',
-      width: '100%',
-      height: '100%',
-      display: 'block',
-      opacity: '0',
-      cursor: 'pointer',
-      zIndex: '20',
-      pointerEvents: 'auto',
-    });
+    if (!alreadyPatched) {
+      input.setAttribute(IMAGE_INPUT_PATCHED, '1');
 
-    input.addEventListener('click', () => {
-      // 允许连续选择同一张图片，否则浏览器可能不会触发 change。
-      input.value = '';
-    }, true);
+      Object.assign(input.style, {
+        position: 'absolute',
+        inset: '0',
+        width: '100%',
+        height: '100%',
+        display: 'block',
+        opacity: '0',
+        cursor: 'pointer',
+        zIndex: '20',
+        pointerEvents: 'auto',
+      });
+
+      input.addEventListener('click', () => {
+        // 允许连续选择同一张图片，否则浏览器可能不会触发 change。
+        input.value = '';
+      }, true);
+    }
 
     if (container && container.getAttribute(PATCHED) !== '1') {
       container.setAttribute(PATCHED, '1');
@@ -448,6 +551,7 @@ function patchImageInputs() {
 
       container.addEventListener('click', event => {
         if (event.target === input) return;
+        if (isBackupPickerElement(event.target)) return;
         const removeButton = event.target?.closest?.('button');
         if (removeButton) return;
         event.preventDefault();
