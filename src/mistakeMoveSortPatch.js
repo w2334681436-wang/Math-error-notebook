@@ -10,6 +10,7 @@ import { buildMistakeCard, getMistakeListReverseKey, isMistakeListReversed } fro
 const PATCHED = 'data-mn-move-sort-patched';
 const CARD_PATCHED = 'data-mn-move-button-patched';
 const IMAGE_INPUT_PATCHED = 'data-mn-image-input-patched';
+const IMAGE_BACKUP_BUTTON_PATCHED = 'data-mn-backup-image-button-patched';
 const SORT_BUTTON_ID = 'mn-global-list-reverse-toggle';
 let rafId = 0;
 
@@ -372,6 +373,48 @@ function findUploadContainer(input) {
   return input.parentElement;
 }
 
+function createBackupImageButton(input, container) {
+  if (!container || !input) return;
+  if (!(container.textContent || '').includes('添加图片')) return;
+  if (container.getAttribute(IMAGE_BACKUP_BUTTON_PATCHED) === '1') return;
+
+  container.setAttribute(IMAGE_BACKUP_BUTTON_PATCHED, '1');
+
+  const backupButton = document.createElement('button');
+  backupButton.type = 'button';
+  backupButton.textContent = '+ 备用添加图片';
+  backupButton.title = '备用入口，支持一次选择多张图片';
+  backupButton.setAttribute('data-role', 'backup-image-picker');
+  Object.assign(backupButton.style, buttonStyle({
+    minHeight: '92px',
+    width: '100%',
+    borderRadius: '14px',
+    border: '1px dashed #93c5fd',
+    background: '#eff6ff',
+    color: '#2563eb',
+    boxShadow: 'none',
+    fontSize: '13px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    textAlign: 'center',
+    whiteSpace: 'normal',
+  }));
+
+  backupButton.addEventListener('pointerdown', event => event.stopPropagation(), true);
+  backupButton.addEventListener('mousedown', event => event.stopPropagation(), true);
+  backupButton.addEventListener('touchstart', event => event.stopPropagation(), { capture: true, passive: true });
+  backupButton.addEventListener('click', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    input.setAttribute('multiple', 'multiple');
+    input.value = '';
+    input.click();
+  }, true);
+
+  container.insertAdjacentElement('afterend', backupButton);
+}
+
 function patchImageInputs() {
   document.querySelectorAll('input[type="file"][accept*="image"]').forEach(input => {
     if (input.getAttribute(IMAGE_INPUT_PATCHED) === '1') return;
@@ -413,6 +456,8 @@ function patchImageInputs() {
         input.click();
       }, true);
     }
+
+    createBackupImageButton(input, container);
   });
 }
 
