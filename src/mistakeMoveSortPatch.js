@@ -373,20 +373,10 @@ function findUploadContainer(input) {
   return input.parentElement;
 }
 
-function isBackupPickerElement(target) {
-  return Boolean(target?.closest?.('[data-role="backup-image-picker"]'));
-}
-
-function removeLegacyBackupButtons(container) {
-  if (!container?.parentElement) return;
-
-  container.parentElement
-    .querySelectorAll('[data-role="backup-image-picker"]')
-    .forEach(element => {
-      if (element.getAttribute('data-mn-backup-image-icon') !== '1') {
-        element.remove();
-      }
-    });
+function removeLegacyBackupButtons() {
+  document.querySelectorAll('[data-role="backup-image-picker"], [data-mn-backup-image-icon="1"]').forEach(element => {
+    element.remove();
+  });
 }
 
 function assignFilesToInput(targetInput, fileList) {
@@ -414,114 +404,264 @@ function dispatchNativeFileChange(input) {
   input.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-function createBackupImageButton(input, container) {
-  if (!container || !input) return;
-  if (!(container.textContent || '').includes('添加图片')) return;
+function isMistakeFormRootCandidate(node) {
+  const text = node?.textContent || '';
+  return (text.includes('记录错题') || text.includes('编辑错题'))
+    && text.includes('题目图片')
+    && text.includes('答案解析');
+}
 
-  removeLegacyBackupButtons(container);
+function findMistakeFormRoot() {
+  const headings = Array.from(document.querySelectorAll('h1, h2, h3'))
+    .filter(element => /记录错题|编辑错题/.test(element.textContent || ''));
 
-  const oldIcon = container.querySelector('[data-role="backup-image-picker"][data-mn-backup-image-icon="1"]');
-  if (oldIcon) return;
+  for (const heading of headings) {
+    let node = heading;
+    let depth = 0;
+    while (node && node !== document.body && depth < 8) {
+      if (isMistakeFormRootCandidate(node)) return node;
+      node = node.parentElement;
+      depth += 1;
+    }
+  }
 
-  container.setAttribute(IMAGE_BACKUP_BUTTON_PATCHED, '1');
-  const currentPosition = window.getComputedStyle(container).position;
-  if (currentPosition === 'static') container.style.position = 'relative';
+  return null;
+}
 
-  const picker = document.createElement('label');
-  picker.title = '备用添加图片，支持一次选择多张图片';
-  picker.setAttribute('data-role', 'backup-image-picker');
-  picker.setAttribute('data-mn-backup-image-icon', '1');
-  Object.assign(picker.style, {
-    position: 'absolute',
-    top: '10px',
-    right: '10px',
-    zIndex: '60',
-    width: '34px',
-    height: '34px',
-    borderRadius: '999px',
-    border: '1px solid rgba(37, 99, 235, 0.22)',
-    background: 'rgba(255, 255, 255, 0.88)',
-    color: '#2563eb',
+function getFormImageInputs(root) {
+  const inputs = Array.from(root.querySelectorAll('input[type="file"][accept*="image"]'))
+    .filter(input => input.getAttribute('data-mn-quick-upload-input') !== '1')
+    .filter(input => !input.closest('[data-role="backup-image-picker"]'));
+
+  const uploadInputs = inputs.filter(input => {
+    const container = findUploadContainer(input);
+    const text = container?.textContent || '';
+    return text.includes('添加图片');
+  });
+
+  return {
+    question: uploadInputs[0] || inputs[0] || null,
+    analysis: uploadInputs[1] || inputs[1] || null,
+  };
+}
+
+function resolveTargetInput(kind) {
+  const root = findMistakeFormRoot();
+  if (!root) return null;
+  return getFormImageInputs(root)[kind] || null;
+}
+
+function findQuestionAnchor(root) {
+  const heading = Array.from(root.querySelectorAll('h1, h2, h3'))
+    .find(element => /记录错题|编辑错题/.test(element.textContent || ''));
+  if (heading) return heading;
+
+  return Array.from(root.querySelectorAll('label, div, span'))
+    .find(element => (element.textContent || '').includes('题目图片')) || null;
+}
+
+function findAnalysisAnchor(root) {
+  const labels = Array.from(root.querySelectorAll('label'));
+  const label = labels.find(element => (element.textContent || '').includes('答案解析'));
+  if (label) return label;
+
+  const candidates = Array.from(root.querySelectorAll('div, span, p'));
+  return candidates
+    .filter(element => (element.textContent || '').includes('答案解析'))
+    .sort((a, b) => (a.textContent || '').length - (b.textContent || '').length)[0] || null;
+}
+
+function quickUploadButtonStyle() {
+  return {
+    position: 'relative',
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
+    height: '26px',
+    padding: '0 8px',
+    borderRadius: '999px',
+    border: '1px solid #dbeafe',
+    background: '#f8fafc',
+    color: '#2563eb',
+    fontSize: '12px',
+    fontWeight: '800',
+    lineHeight: '1',
     cursor: 'pointer',
-    boxShadow: '0 4px 12px rgba(15, 23, 42, 0.10)',
+    boxShadow: '0 1px 4px rgba(15, 23, 42, 0.06)',
+    overflow: 'hidden',
     WebkitTapHighlightColor: 'transparent',
     userSelect: 'none',
-    backdropFilter: 'blur(6px)',
+    whiteSpace: 'nowrap',
+  };
+}
+
+function createQuickUploadControl(kind) {
+  const shortcut = kind === 'question' ? 'Ctrl+Alt+Q' : 'Ctrl+Alt+A';
+  const labelText = kind === 'question' ? '错题图' : '解析图';
+  const title = kind === 'question'
+    ? '上传错题图片，支持一次选择多张图片'
+    : '上传解析图片，支持一次选择多张图片';
+
+  const wrap = document.createElement('span');
+  wrap.setAttribute('data-mn-quick-upload-wrap', kind);
+  Object.assign(wrap.style, {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    marginLeft: '8px',
+    verticalAlign: 'middle',
+    flexShrink: '0',
   });
+
+  const picker = document.createElement('label');
+  picker.setAttribute('data-mn-quick-upload-button', kind);
+  picker.title = `${title}；快捷键：${shortcut}`;
+  Object.assign(picker.style, quickUploadButtonStyle());
 
   const icon = document.createElement('span');
-  icon.textContent = '＋';
+  icon.textContent = '↥';
   Object.assign(icon.style, {
-    fontSize: '22px',
+    fontSize: '14px',
     lineHeight: '1',
-    fontWeight: '700',
-    transform: 'translateY(-1px)',
+    marginRight: '3px',
     pointerEvents: 'none',
   });
 
-  const backupInput = document.createElement('input');
-  backupInput.type = 'file';
-  backupInput.accept = input.getAttribute('accept') || 'image/*';
-  backupInput.multiple = true;
-  backupInput.setAttribute('aria-label', '备用添加图片');
-  Object.assign(backupInput.style, {
+  const text = document.createElement('span');
+  text.textContent = '上传';
+  text.style.pointerEvents = 'none';
+
+  const quickInput = document.createElement('input');
+  quickInput.type = 'file';
+  quickInput.accept = 'image/*';
+  quickInput.multiple = true;
+  quickInput.setAttribute('data-mn-quick-upload-input', '1');
+  quickInput.setAttribute('aria-label', title);
+  Object.assign(quickInput.style, {
     position: 'absolute',
-    width: '1px',
-    height: '1px',
+    inset: '0',
+    width: '100%',
+    height: '100%',
     opacity: '0',
-    overflow: 'hidden',
-    pointerEvents: 'none',
+    cursor: 'pointer',
   });
 
-  // 不让父级上传卡片的捕获点击逻辑抢走备用按钮的点击。
+  // 避免外层上传卡片、拖拽或表单捕获逻辑抢走点击。
   ['pointerdown', 'mousedown', 'touchstart', 'click'].forEach(type => {
     picker.addEventListener(type, event => {
       event.stopPropagation();
     }, { capture: true, passive: type === 'touchstart' });
   });
 
-  picker.addEventListener('click', () => {
-    backupInput.value = '';
-  });
+  quickInput.addEventListener('click', event => {
+    event.stopPropagation();
+    quickInput.value = '';
+  }, true);
 
-  backupInput.addEventListener('change', () => {
-    const files = backupInput.files;
+  quickInput.addEventListener('change', () => {
+    const files = quickInput.files;
     if (!files || files.length === 0) return;
 
-    input.setAttribute('multiple', 'multiple');
-    input.value = '';
+    const targetInput = resolveTargetInput(kind);
+    if (!targetInput) {
+      alert(kind === 'question'
+        ? '没有找到错题图片上传入口，请刷新页面后再试。'
+        : '没有找到解析图片上传入口，可能当前解析图片已达到数量上限。');
+      quickInput.value = '';
+      return;
+    }
 
-    const assigned = assignFilesToInput(input, files);
+    targetInput.setAttribute('multiple', 'multiple');
+    targetInput.value = '';
+
+    const assigned = assignFilesToInput(targetInput, files);
     if (assigned) {
-      dispatchNativeFileChange(input);
-      showToast(files.length > 1 ? `已选择 ${files.length} 张图片` : '已选择图片');
+      dispatchNativeFileChange(targetInput);
+      showToast(`${labelText}已选择 ${files.length} 张`);
     } else {
-      // 极端浏览器如果禁止转交 FileList，就退回到原始 input 的选择窗口。
       showToast('请在弹出的窗口里重新选择图片');
       window.setTimeout(() => {
-        input.value = '';
-        input.click();
+        targetInput.value = '';
+        targetInput.click();
       }, 0);
     }
 
-    backupInput.value = '';
+    quickInput.value = '';
+  });
+
+  const shortcutMark = document.createElement('span');
+  shortcutMark.textContent = `${shortcut} ${labelText}`;
+  Object.assign(shortcutMark.style, {
+    color: '#94a3b8',
+    fontSize: '10px',
+    fontWeight: '700',
+    lineHeight: '1',
+    whiteSpace: 'nowrap',
   });
 
   picker.appendChild(icon);
-  picker.appendChild(backupInput);
-  container.appendChild(picker);
+  picker.appendChild(text);
+  picker.appendChild(quickInput);
+  wrap.appendChild(picker);
+  wrap.appendChild(shortcutMark);
+  return wrap;
+}
+
+function prepareAnchorForInlineActions(anchor) {
+  if (!anchor) return;
+  const tag = anchor.tagName?.toLowerCase();
+
+  if (tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'label') {
+    anchor.style.display = 'flex';
+    anchor.style.alignItems = 'center';
+    anchor.style.gap = anchor.style.gap || '6px';
+    anchor.style.flexWrap = 'wrap';
+  }
+}
+
+function attachQuickUpload(anchor, kind) {
+  if (!anchor) return;
+  const old = anchor.querySelector?.(`[data-mn-quick-upload-wrap="${kind}"]`);
+  if (old) return;
+
+  prepareAnchorForInlineActions(anchor);
+  anchor.appendChild(createQuickUploadControl(kind));
+}
+
+function patchQuickUploadControls() {
+  removeLegacyBackupButtons();
+
+  const root = findMistakeFormRoot();
+  if (!root) {
+    document.querySelectorAll('[data-mn-quick-upload-wrap]').forEach(element => element.remove());
+    return;
+  }
+
+  const inputs = getFormImageInputs(root);
+  if (inputs.question) {
+    inputs.question.setAttribute('multiple', 'multiple');
+    inputs.question.setAttribute('data-mn-form-upload-kind', 'question');
+  }
+  if (inputs.analysis) {
+    inputs.analysis.setAttribute('multiple', 'multiple');
+    inputs.analysis.setAttribute('data-mn-form-upload-kind', 'analysis');
+  }
+
+  attachQuickUpload(findQuestionAnchor(root), 'question');
+  attachQuickUpload(findAnalysisAnchor(root), 'analysis');
 }
 
 function patchImageInputs() {
+  removeLegacyBackupButtons();
+
   document.querySelectorAll('input[type="file"][accept*="image"]').forEach(input => {
+    if (input.getAttribute('data-mn-quick-upload-input') === '1') return;
+
     const alreadyPatched = input.getAttribute(IMAGE_INPUT_PATCHED) === '1';
     const container = findUploadContainer(input);
-    const isMistakeImageButton = (container?.textContent || '').includes('添加图片');
+    const isImageButton = /添加图片|添加补充截图/.test(container?.textContent || '');
 
-    if (isMistakeImageButton) input.setAttribute('multiple', 'multiple');
+    if (isImageButton) input.setAttribute('multiple', 'multiple');
 
     if (!alreadyPatched) {
       input.setAttribute(IMAGE_INPUT_PATCHED, '1');
@@ -551,7 +691,7 @@ function patchImageInputs() {
 
       container.addEventListener('click', event => {
         if (event.target === input) return;
-        if (isBackupPickerElement(event.target)) return;
+        if (event.target?.closest?.('[data-mn-quick-upload-wrap]')) return;
         const removeButton = event.target?.closest?.('button');
         if (removeButton) return;
         event.preventDefault();
@@ -560,9 +700,42 @@ function patchImageInputs() {
         input.click();
       }, true);
     }
-
-    createBackupImageButton(input, container);
   });
+
+  patchQuickUploadControls();
+}
+
+function openQuickUploadByShortcut(kind) {
+  const root = findMistakeFormRoot();
+  if (!root) return false;
+
+  const pickerInput = root.querySelector(`input[data-mn-quick-upload-input="1"]`)
+    && root.querySelector(`[data-mn-quick-upload-wrap="${kind}"] input[data-mn-quick-upload-input="1"]`);
+
+  if (!pickerInput) return false;
+  pickerInput.value = '';
+  pickerInput.click();
+  return true;
+}
+
+function handleQuickUploadShortcut(event) {
+  if (event.defaultPrevented) return;
+  if (!(event.ctrlKey || event.metaKey) || !event.altKey || event.shiftKey) return;
+
+  const key = String(event.key || '').toLowerCase();
+  if (key === 'q') {
+    if (openQuickUploadByShortcut('question')) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  if (key === 'a') {
+    if (openQuickUploadByShortcut('analysis')) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
 }
 
 function runPatch() {
@@ -588,6 +761,7 @@ function boot() {
   });
 
   window.addEventListener('focus', schedulePatch);
+  document.addEventListener('keydown', handleQuickUploadShortcut, true);
   window.setInterval(schedulePatch, 1500);
 }
 
