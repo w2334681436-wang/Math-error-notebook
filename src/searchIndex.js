@@ -1,5 +1,6 @@
 // src/searchIndex.js
 export const MISTAKE_PAGE_SIZE = 20;
+export const MISTAKE_SORT_STORAGE_PREFIX = 'mathNotebook.mistakeListReversed.';
 
 export function normalizeSearchText(value) {
   return String(value ?? '')
@@ -33,6 +34,7 @@ function getPendingOpenId(subjectId, roundNo) {
   if (typeof localStorage === 'undefined') return null;
   const raw = localStorage.getItem('mathNotebook.pendingOpenMistake');
   if (!raw) return null;
+
   try {
     const data = JSON.parse(raw);
     if (String(data.subjectId) === String(subjectId) && Number(data.roundNo) === Number(roundNo)) {
@@ -41,13 +43,24 @@ function getPendingOpenId(subjectId, roundNo) {
   } catch {
     return null;
   }
+
   return null;
+}
+
+export function getMistakeListReverseKey(subjectId) {
+  return `${MISTAKE_SORT_STORAGE_PREFIX}${subjectId}`;
+}
+
+export function isMistakeListReversed(subjectId) {
+  if (typeof localStorage === 'undefined' || !subjectId) return false;
+  return localStorage.getItem(getMistakeListReverseKey(subjectId)) === '1';
 }
 
 // 适配中文、英文、数字搜索。
 export function createSearchTokens(text) {
   const normalized = normalizeSearchText(text);
   const tokens = new Set();
+
   if (!normalized) return [];
 
   const words = normalized.match(/[a-z0-9_./+-]+/g) || [];
@@ -84,6 +97,7 @@ function cardMatchesKeyword(card, keyword) {
   if (queryTokens.length === 0) {
     return createSearchTokens(q).every(t => card.tokens?.includes(t));
   }
+
   return queryTokens.every(t => card.tokens?.includes(t));
 }
 
@@ -102,7 +116,7 @@ export function buildMistakeCard(mistake) {
     mistake.analysisText || '',
     dateText,
     mistake.isMastered ? '已掌握 熟练' : '',
-    mistake.reflection ? '已复盘' : '待复盘'
+    mistake.reflection ? '已复盘' : '待复盘',
   ].join(' '));
 
   return {
@@ -119,7 +133,7 @@ export function buildMistakeCard(mistake) {
     isMastered: Boolean(mistake.isMastered),
     reviewCount: 0,
     searchText,
-    tokens: createSearchTokens(searchText)
+    tokens: createSearchTokens(searchText),
   };
 }
 
@@ -146,12 +160,15 @@ export async function refreshMistakeCard(db, mistakeId) {
   await db.mistakeCards.put(buildMistakeCard(mistake));
 }
 
-async function queryFirstRoundCards(db, subjectId, q, offset, limit) {
+async function queryFirstRoundCards(db, subjectId, q, offset, limit, reversed) {
   if (!q) {
-    return db.mistakeCards
+    const collection = db.mistakeCards
       .where('[subjectId+createdAtMs]')
-      .between([subjectId, 0], [subjectId, Number.MAX_SAFE_INTEGER])
-      .reverse()
+      .between([subjectId, 0], [subjectId, Number.MAX_SAFE_INTEGER]);
+
+    const orderedCollection = reversed ? collection : collection.reverse();
+
+    return orderedCollection
       .offset(offset)
       .limit(limit)
       .toArray();
@@ -159,6 +176,7 @@ async function queryFirstRoundCards(db, subjectId, q, offset, limit) {
 
   const anchor = pickBestToken(q);
   let candidates = [];
+
   if (anchor) {
     candidates = await db.mistakeCards.where('tokens').equals(anchor).toArray();
   } else {
@@ -168,11 +186,15 @@ async function queryFirstRoundCards(db, subjectId, q, offset, limit) {
   return candidates
     .filter(card => card.subjectId === subjectId)
     .filter(card => cardMatchesKeyword(card, q))
-    .sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0))
+    .sort((a, b) => {
+      const at = a.createdAtMs || 0;
+      const bt = b.createdAtMs || 0;
+      return reversed ? at - bt : bt - at;
+    })
     .slice(offset, offset + limit);
 }
 
-async function queryRoundCards(db, subjectId, roundNo, q, offset, limit) {
+async function queryRoundCards(db, subjectId, roundNo, q, offset, limit, reversed) {
   const items = await db.reviewRoundItems
     .where('[subjectId+roundNo+order]')
     .between([subjectId, roundNo, 0], [subjectId, roundNo, Number.MAX_SAFE_INTEGER])
@@ -185,16 +207,22 @@ async function queryRoundCards(db, subjectId, roundNo, q, offset, limit) {
     .filter(card => card.subjectId === subjectId)
     .filter(card => cardMatchesKeyword(card, q));
 
-  const orderMap = new Map(items.map((item, index) => [item.mistakeId, item.order || index]));
-  cards.sort((a, b) => (orderMap.get(a.id) || 0) - (orderMap.get(b.id) || 0));
+  const orderMap = new Map(items.map((item, index) => [item.mistakeId, item.order ?? index]));
+  cards.sort((a, b) => {
+    const ao = orderMap.get(a.id) ?? 0;
+    const bo = orderMap.get(b.id) ?? 0;
+    return reversed ? bo - ao : ao - bo;
+  });
 
   return cards.slice(offset, offset + limit);
 }
 
 function movePendingCardToTop(cards, pendingId) {
   if (!pendingId || !Array.isArray(cards) || cards.length === 0) return cards;
+
   const index = cards.findIndex(card => String(card.id) === String(pendingId));
   if (index <= 0) return cards;
+
   const copy = [...cards];
   const [target] = copy.splice(index, 1);
   copy.unshift(target);
@@ -207,12 +235,13 @@ export async function queryMistakeCards(db, { subjectId, keyword = '', offset = 
   const q = normalizeSearchText(keyword);
   const roundNo = getSelectedRoundNo(subjectId);
   const pendingId = getPendingOpenId(subjectId, roundNo);
-
+  const reversed = isMistakeListReversed(subjectId);
   let cards = [];
+
   if (roundNo <= 1) {
-    cards = await queryFirstRoundCards(db, subjectId, q, offset, limit);
+    cards = await queryFirstRoundCards(db, subjectId, q, offset, limit, reversed);
   } else {
-    cards = await queryRoundCards(db, subjectId, roundNo, q, offset, limit);
+    cards = await queryRoundCards(db, subjectId, roundNo, q, offset, limit, reversed);
   }
 
   // “上次刷到”跳转时，把目标卡片提到当前列表第一项，避免分页未加载导致找不到。

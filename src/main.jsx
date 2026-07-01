@@ -6,9 +6,10 @@ import 'katex/dist/katex.min.css';
 import './answerPreviewStyle.css';
 import './answerPreviewPatch.js';
 import './reviewRoundsPatch.js';
+import './mistakeMoveSortPatch.js';
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <App />
-  </React.StrictMode>
+  </React.StrictMode>,
 );
