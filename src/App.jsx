@@ -29,6 +29,7 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { exportMistakesForAI } from './aiExport';
+import AiExportDialog from './AiExportDialog';
 
 // --- 工具函数 ---
 
@@ -123,6 +124,7 @@ const cloneNodeRecursive = async (nodeId, newParentId) => {
 function App() {
   const [activeTab, setActiveTab] = useState('mistakes'); 
   const [aiExportProgress, setAiExportProgress] = useState(null);
+  const [showAiExportDialog, setShowAiExportDialog] = useState(false);
   
   // [新增] 科目管理逻辑
   const subjects = useLiveQuery(() => db.subjects.toArray()) || [];
@@ -171,14 +173,16 @@ setActiveSubjectId(id); // 自动切换到新科目
     }
   };
 
-  const handleAiExport = async () => {
+  const handleAiExport = async (options) => {
     if (aiExportProgress) return;
 
     try {
+      setShowAiExportDialog(false);
       setAiExportProgress({ stage: 'preparing', completed: 0, total: 0 });
       const result = await exportMistakesForAI({
         db,
         appVersion: APP_VERSION,
+        options,
         onProgress: setAiExportProgress,
       });
 
@@ -188,7 +192,7 @@ setActiveSubjectId(id); // 自动切换到新科目
         `错题：${result.summary.counts.mistakes} 道\n` +
         `题目图片：${result.summary.counts.questionImages} 张\n` +
         `解析图片：${result.summary.counts.analysisImages} 张\n\n` +
-        `现在可以把这个 ZIP 文件直接发给 AI。`
+        `已自动生成 ${result.outputFormat === 'zip' ? 'ZIP' : 'Markdown'}，现在可以直接发给 AI。`
       );
     } catch (error) {
       console.error(error);
@@ -596,10 +600,10 @@ const handleImport = async (e) => {
   </button>
 )}
           <button
-            onClick={handleAiExport}
+            onClick={() => setShowAiExportDialog(true)}
             disabled={Boolean(aiExportProgress)}
             className="px-2.5 py-2 bg-violet-50 hover:bg-violet-100 rounded-full text-violet-700 shrink-0 flex items-center gap-1 text-xs font-bold disabled:opacity-60"
-            title="把全部错题、复盘、解析和图片打包成一个可直接发给 AI 的 ZIP 文件"
+            title="选择学科和内容后，导出最适合 AI 读取的文件"
           >
             <Bot size={18} />
             <span>
@@ -659,6 +663,14 @@ const handleImport = async (e) => {
           <span className="text-[10px] font-bold">知识库</span>
         </button>
       </div>
+
+      {showAiExportDialog && (
+        <AiExportDialog
+          subjects={subjects}
+          onCancel={() => setShowAiExportDialog(false)}
+          onConfirm={handleAiExport}
+        />
+      )}
     </div>
   );
 }
