@@ -1,7 +1,7 @@
 // Service Worker: 合并修复：底部工具栏重复按钮 + 解析预览底部回弹，强制刷新缓存版
 // 修改 CACHE_NAME 后，浏览器会安装新 SW，并清理旧缓存。
 // build 时 update-sw.js 还会再次把这里替换成时间戳版本。
-const CACHE_NAME = 'math-notebook-cache-v202606181530';
+const CACHE_NAME = 'math-notebook-cache-v1785671801363';
 
 const APP_SHELL_FILES = [
   '/',

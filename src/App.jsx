@@ -15,7 +15,7 @@ import {
   MoreVertical, 
   CheckSquare, Copy, Scissors, Clipboard, CheckCircle2, Circle,
   Home, ChevronLeft, ArrowDownUp, Calendar,
-  Download, UploadCloud
+  Download, UploadCloud, Bot
 } from 'lucide-react';
 
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay, useDndMonitor, pointerWithin } from '@dnd-kit/core';
@@ -28,6 +28,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
+import { exportMistakesForAI } from './aiExport';
 
 // --- 工具函数 ---
 
@@ -121,6 +122,7 @@ const cloneNodeRecursive = async (nodeId, newParentId) => {
 // 在 App 组件内
 function App() {
   const [activeTab, setActiveTab] = useState('mistakes'); 
+  const [aiExportProgress, setAiExportProgress] = useState(null);
   
   // [新增] 科目管理逻辑
   const subjects = useLiveQuery(() => db.subjects.toArray()) || [];
@@ -166,6 +168,33 @@ useEffect(() => {
       setActiveTab('mistakes');
 setMistakeView('list');
 setActiveSubjectId(id); // 自动切换到新科目
+    }
+  };
+
+  const handleAiExport = async () => {
+    if (aiExportProgress) return;
+
+    try {
+      setAiExportProgress({ stage: 'preparing', completed: 0, total: 0 });
+      const result = await exportMistakesForAI({
+        db,
+        appVersion: APP_VERSION,
+        onProgress: setAiExportProgress,
+      });
+
+      alert(
+        `✅ AI 专用文件导出成功\n\n` +
+        `文件：${result.filename}\n` +
+        `错题：${result.summary.counts.mistakes} 道\n` +
+        `题目图片：${result.summary.counts.questionImages} 张\n` +
+        `解析图片：${result.summary.counts.analysisImages} 张\n\n` +
+        `现在可以把这个 ZIP 文件直接发给 AI。`
+      );
+    } catch (error) {
+      console.error(error);
+      alert(`❌ AI 文件导出失败：${error.message || error}`);
+    } finally {
+      setAiExportProgress(null);
     }
   };
 
@@ -566,6 +595,22 @@ const handleImport = async (e) => {
     <span className="hidden sm:inline">保存</span>
   </button>
 )}
+          <button
+            onClick={handleAiExport}
+            disabled={Boolean(aiExportProgress)}
+            className="px-2.5 py-2 bg-violet-50 hover:bg-violet-100 rounded-full text-violet-700 shrink-0 flex items-center gap-1 text-xs font-bold disabled:opacity-60"
+            title="把全部错题、复盘、解析和图片打包成一个可直接发给 AI 的 ZIP 文件"
+          >
+            <Bot size={18} />
+            <span>
+              {aiExportProgress?.stage === 'packing'
+                ? `${aiExportProgress.completed}/${aiExportProgress.total}`
+                : aiExportProgress
+                  ? '打包中'
+                  : '给AI'}
+            </span>
+          </button>
+
           <button onClick={handleExport} className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0" title="导出备份">
             <Download size={20} />
           </button>
@@ -1415,9 +1460,8 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
               <div 
     className="w-full p-4 bg-white border border-gray-200 rounded-xl min-h-[120px] prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100 prose-pre:text-gray-800 prose-code:text-gray-800 transition"
 >
-                 <MarkdownView>
-  {text}
-</MarkdownView>
+                 {text ? (
+                   <MarkdownView>{text}</MarkdownView>
                  ) : (
                    <span className="text-gray-400 italic flex items-center gap-1"><Edit size={14}/> 点击此处开始编写笔记 (支持 Markdown & LaTeX)...</span>
                  )}
