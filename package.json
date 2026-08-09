@@ -1,11 +1,11 @@
 {
   "name": "math-mistakes",
   "private": true,
-  "version": "3.4.9",
+  "version": "3.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node update-sw.js && vite build",
+    "build": "vite build && node scripts/build-offline.mjs",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },
