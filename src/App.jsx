@@ -3,6 +3,7 @@ import { db } from './db';
 import {
   MISTAKE_PAGE_SIZE,
   buildMistakeCard,
+  getSelectedReviewRound,
   queryMistakeCards,
   rebuildAllMistakeCards,
   refreshMistakeCard
@@ -15,7 +16,7 @@ import {
   MoreVertical, 
   CheckSquare, Copy, Scissors, Clipboard, CheckCircle2, Circle,
   Home, ChevronLeft, ArrowDownUp, Calendar,
-  Download, UploadCloud, Bot
+  Download, UploadCloud, Bot, ListX
 } from 'lucide-react';
 
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay, useDndMonitor, pointerWithin } from '@dnd-kit/core';
@@ -30,6 +31,11 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { exportMistakesForAI } from './aiExport';
 import AiExportDialog from './AiExportDialog';
+import {
+  getLastReviewProgressKey,
+  removeMistakeFromReviewRound,
+  setSelectedReviewRound,
+} from './reviewRoundActions';
 
 // --- 工具函数 ---
 
@@ -211,7 +217,9 @@ const handleExport = async () => {
     const counts = {
       mistakes: await db.mistakes.count(),
       notes: await db.notes.count(),
-      subjects: await db.subjects.count()
+      subjects: await db.subjects.count(),
+      reviewRoundItems: await db.reviewRoundItems.count(),
+      reviewRoundExclusions: await db.reviewRoundExclusions.count()
     };
 
     const parts = [];
@@ -223,7 +231,7 @@ const handleExport = async () => {
     // 第一行是备份元信息
     pushLine({
       format: 'MathNotebookBackupNDJSON',
-      version: 2,
+      version: 3,
       appVersion: APP_VERSION,
       createdAt,
       counts
@@ -240,6 +248,14 @@ const handleExport = async () => {
 
     await db.mistakes.each(record => {
       pushLine({ table: 'mistakes', record });
+    });
+
+    await db.reviewRoundItems.each(record => {
+      pushLine({ table: 'reviewRoundItems', record });
+    });
+
+    await db.reviewRoundExclusions.each(record => {
+      pushLine({ table: 'reviewRoundExclusions', record });
     });
 
     const blob = new Blob(parts, {
@@ -262,7 +278,9 @@ const handleExport = async () => {
       `✅ 导出成功\n\n` +
       `错题：${counts.mistakes} 条\n` +
       `笔记：${counts.notes} 条\n` +
-      `科目：${counts.subjects} 个`
+      `科目：${counts.subjects} 个\n` +
+      `轮次题目：${counts.reviewRoundItems} 条\n` +
+      `本轮移出记录：${counts.reviewRoundExclusions} 条`
     );
   } catch (error) {
     console.error(error);
@@ -335,12 +353,24 @@ const importOldJsonBackup = async (file) => {
   const importedMistakes = backup.data.mistakes || [];
   const importedNotes = backup.data.notes || [];
   const importedSubjects = backup.data.subjects || [];
+  const importedRoundItems = backup.data.reviewRoundItems || [];
+  const importedRoundExclusions = backup.data.reviewRoundExclusions || [];
 
-  await db.transaction('rw', db.mistakes, db.notes, db.subjects, db.mistakeCards, async () => {
+  await db.transaction(
+    'rw',
+    db.mistakes,
+    db.notes,
+    db.subjects,
+    db.mistakeCards,
+    db.reviewRoundItems,
+    db.reviewRoundExclusions,
+    async () => {
     await db.mistakes.clear();
     await db.notes.clear();
     await db.subjects.clear();
     await db.mistakeCards.clear();
+    await db.reviewRoundItems.clear();
+    await db.reviewRoundExclusions.clear();
 
     if (importedMistakes.length > 0) {
       await db.mistakes.bulkPut(importedMistakes);
@@ -356,12 +386,22 @@ const importOldJsonBackup = async (file) => {
     } else {
       await db.subjects.bulkAdd([{ name: '数学' }, { name: '408' }]);
     }
+
+    if (importedRoundItems.length > 0) {
+      await db.reviewRoundItems.bulkPut(importedRoundItems);
+    }
+
+    if (importedRoundExclusions.length > 0) {
+      await db.reviewRoundExclusions.bulkPut(importedRoundExclusions);
+    }
   });
 
   return {
     mistakes: importedMistakes.length,
     notes: importedNotes.length,
-    subjects: importedSubjects.length
+    subjects: importedSubjects.length,
+    reviewRoundItems: importedRoundItems.length,
+    reviewRoundExclusions: importedRoundExclusions.length
   };
 };
 
@@ -372,7 +412,9 @@ const importNdjsonBackup = async (file) => {
   const counts = {
     mistakes: 0,
     notes: 0,
-    subjects: 0
+    subjects: 0,
+    reviewRoundItems: 0,
+    reviewRoundExclusions: 0
   };
 
   // 第一遍：只校验文件，不清空数据库
@@ -386,7 +428,13 @@ const importNdjsonBackup = async (file) => {
       return;
     }
 
-    if (!['mistakes', 'notes', 'subjects'].includes(obj.table)) {
+    if (![
+      'mistakes',
+      'notes',
+      'subjects',
+      'reviewRoundItems',
+      'reviewRoundExclusions'
+    ].includes(obj.table)) {
       throw new Error(`第 ${lineNo} 行表名错误：${obj.table}`);
     }
 
@@ -406,11 +454,15 @@ const importNdjsonBackup = async (file) => {
   await db.notes.clear();
   await db.subjects.clear();
   await db.mistakeCards.clear();
+  await db.reviewRoundItems.clear();
+  await db.reviewRoundExclusions.clear();
 
   const batches = {
     mistakes: [],
     notes: [],
-    subjects: []
+    subjects: [],
+    reviewRoundItems: [],
+    reviewRoundExclusions: []
   };
 
   const BATCH_SIZE = 20;
@@ -434,6 +486,18 @@ const importNdjsonBackup = async (file) => {
     await db.mistakeCards.bulkPut(batches.mistakes.map(buildMistakeCard));
 
     batches.mistakes = [];
+  };
+
+  const flushRoundItems = async () => {
+    if (batches.reviewRoundItems.length === 0) return;
+    await db.reviewRoundItems.bulkPut(batches.reviewRoundItems);
+    batches.reviewRoundItems = [];
+  };
+
+  const flushRoundExclusions = async () => {
+    if (batches.reviewRoundExclusions.length === 0) return;
+    await db.reviewRoundExclusions.bulkPut(batches.reviewRoundExclusions);
+    batches.reviewRoundExclusions = [];
   };
 
   await readNdjsonBackup(file, async (obj, lineNo) => {
@@ -462,11 +526,29 @@ const importNdjsonBackup = async (file) => {
         await flushMistakes();
       }
     }
+
+    if (obj.table === 'reviewRoundItems') {
+      batches.reviewRoundItems.push(obj.record);
+
+      if (batches.reviewRoundItems.length >= BATCH_SIZE) {
+        await flushRoundItems();
+      }
+    }
+
+    if (obj.table === 'reviewRoundExclusions') {
+      batches.reviewRoundExclusions.push(obj.record);
+
+      if (batches.reviewRoundExclusions.length >= BATCH_SIZE) {
+        await flushRoundExclusions();
+      }
+    }
   });
 
   await flushSubjects();
   await flushNotes();
   await flushMistakes();
+  await flushRoundItems();
+  await flushRoundExclusions();
 
   if (await db.subjects.count() === 0) {
     await db.subjects.bulkAdd([{ name: '数学' }, { name: '408' }]);
@@ -507,7 +589,9 @@ const handleImport = async (e) => {
       `✅ 数据导入成功！页面将自动刷新。\n\n` +
       `错题：${result.mistakes} 条\n` +
       `笔记：${result.notes} 条\n` +
-      `科目：${result.subjects} 个`
+      `科目：${result.subjects} 个\n` +
+      `轮次题目：${result.reviewRoundItems || 0} 条\n` +
+      `本轮移出记录：${result.reviewRoundExclusions || 0} 条`
     );
 
     window.location.reload();
@@ -719,6 +803,7 @@ function MistakeSystem({ subjectId, view, setView }) {
   );
 
   const list = mistakeCards || [];
+  const selectedReviewRound = getSelectedReviewRound(subjectId);
   const hasMore = list.length >= visibleLimit;
   useEffect(() => {
   if (view !== 'list' || !currentMistakeId) return;
@@ -852,7 +937,12 @@ function MistakeSystem({ subjectId, view, setView }) {
       {view === 'detail' && currentMistake && (
         <MistakeDetail
           mistake={currentMistake}
-          onDelete={() => setView('list')}
+          reviewRoundNo={selectedReviewRound}
+          onRemoveFromRound={() => {
+            setCurrentMistakeId(null);
+            setHighlightedMistakeId(null);
+            setView('list');
+          }}
           onEdit={() => setView('edit')}
           onNext={handleNextMistake}
           hasNext={hasNext}
@@ -1819,7 +1909,7 @@ function ImageUpload({ value, onChange, isAnalysis }) {
 }
 
 // --- [修改版] 错题详情：增加复盘自动记录 ---
-function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, hasPrev, onBack }) {
+function MistakeDetail({ mistake, reviewRoundNo, onRemoveFromRound, onEdit, onNext, hasNext, onPrev, hasPrev, onBack }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
   
   // 切换题目时重置解析显示状态
@@ -1845,16 +1935,56 @@ function MistakeDetail({ mistake, onDelete, onEdit, onNext, hasNext, onPrev, has
     }
   }, [showAnalysis, mistake]);
   
-  const handleDelete = async () => {
-  if (confirm('删除后无法恢复，确定吗？')) {
-    await db.transaction('rw', db.mistakes, db.mistakeCards, async () => {
-      await db.mistakes.delete(mistake.id);
-      await db.mistakeCards.delete(mistake.id);
-    });
+  const handleRemoveFromRound = async () => {
+    const roundNo = Number(reviewRoundNo) || 1;
+    const roundName = roundNo === 1 ? '第一轮刷题' : `第${roundNo}轮刷题`;
 
-    onDelete();
-  }
-};
+    if (!confirm(
+      `只从“${roundName}”移出这道题吗？\n\n` +
+      '原题、题目图片、解析以及其他轮次都会完整保留。'
+    )) return;
+
+    try {
+      const result = await removeMistakeFromReviewRound(db, {
+        subjectId: mistake.subjectId,
+        roundNo,
+        mistakeId: mistake.id,
+        title: mistake.title || '未命名错题',
+      });
+
+      // 删除最高轮次的最后一题时，把目录安全退回现存最高轮，避免停在已消失的空轮次。
+      if (roundNo > 1 && result.remainingInRound === 0) {
+        const remainingItems = await db.reviewRoundItems
+          .where('subjectId')
+          .equals(mistake.subjectId)
+          .toArray();
+        const highestRound = remainingItems.reduce(
+          (highest, item) => Math.max(highest, Number(item.roundNo) || 1),
+          1
+        );
+        if (highestRound < roundNo) {
+          setSelectedReviewRound(mistake.subjectId, highestRound);
+        }
+      }
+
+      const progressKey = getLastReviewProgressKey(mistake.subjectId, roundNo);
+      try {
+        const progress = JSON.parse(localStorage.getItem(progressKey) || 'null');
+        if (String(progress?.mistakeId) === String(mistake.id)) {
+          localStorage.removeItem(progressKey);
+        }
+      } catch {
+        localStorage.removeItem(progressKey);
+      }
+      localStorage.removeItem('mathNotebook.activeMistakeId');
+      localStorage.removeItem('mathNotebook.pendingOpenMistake');
+
+      onRemoveFromRound();
+    } catch (error) {
+      console.error(error);
+      alert(`移出本轮失败：${error.message || error}`);
+    }
+  };
 
   // 切换熟练掌握状态
 const toggleMastered = async () => {
@@ -1922,7 +2052,13 @@ const toggleMastered = async () => {
              
              {hasNext && (<><div className="h-6 w-[1px] bg-gray-200 shrink-0"></div><button onClick={onNext} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition shrink-0" title="下一题"><ChevronRight size={24} /></button></>)}
              <div className="h-6 w-[1px] bg-gray-200 shrink-0"></div>
-             <button onClick={handleDelete} className="p-3 rounded-full text-red-400 hover:bg-red-50 transition shrink-0"><Trash2 size={20} /></button>
+             <button
+               onClick={handleRemoveFromRound}
+               className="flex items-center gap-1.5 px-3 py-3 rounded-full text-red-500 bg-red-50 hover:bg-red-100 transition shrink-0 font-bold text-xs whitespace-nowrap"
+               title={`只从第${Number(reviewRoundNo) || 1}轮移出，保留原题和其他轮次`}
+             >
+               <ListX size={19} /> 移出本轮
+             </button>
           </div>
         </div>
 

@@ -1,4 +1,10 @@
 // src/searchIndex.js
+import {
+  getExcludedMistakeIds,
+  getSelectedReviewRound,
+  isMistakeInReviewRound,
+} from './reviewRoundActions';
+
 export const MISTAKE_PAGE_SIZE = 20;
 export const MISTAKE_SORT_STORAGE_PREFIX = 'mathNotebook.mistakeListReversed.';
 
@@ -23,12 +29,7 @@ function getAnalysisImages(mistake) {
   return mistake?.analysisImages || (mistake?.analysisImg ? [mistake.analysisImg] : []);
 }
 
-function getSelectedRoundNo(subjectId) {
-  if (typeof localStorage === 'undefined') return 1;
-  const raw = localStorage.getItem(`mathNotebook.selectedReviewRound.${subjectId}`);
-  const n = Number(raw || 1);
-  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
-}
+export { getSelectedReviewRound } from './reviewRoundActions';
 
 function getPendingOpenId(subjectId, roundNo) {
   if (typeof localStorage === 'undefined') return null;
@@ -161,6 +162,8 @@ export async function refreshMistakeCard(db, mistakeId) {
 }
 
 async function queryFirstRoundCards(db, subjectId, q, offset, limit, reversed) {
+  const excludedIds = await getExcludedMistakeIds(db, subjectId, 1);
+
   if (!q) {
     const collection = db.mistakeCards
       .where('[subjectId+createdAtMs]')
@@ -168,10 +171,10 @@ async function queryFirstRoundCards(db, subjectId, q, offset, limit, reversed) {
 
     const orderedCollection = reversed ? collection : collection.reverse();
 
-    return orderedCollection
-      .offset(offset)
-      .limit(limit)
-      .toArray();
+    const cards = await orderedCollection.toArray();
+    return cards
+      .filter(card => !excludedIds.has(String(card.id)))
+      .slice(offset, offset + limit);
   }
 
   const anchor = pickBestToken(q);
@@ -185,6 +188,7 @@ async function queryFirstRoundCards(db, subjectId, q, offset, limit, reversed) {
 
   return candidates
     .filter(card => card.subjectId === subjectId)
+    .filter(card => !excludedIds.has(String(card.id)))
     .filter(card => cardMatchesKeyword(card, q))
     .sort((a, b) => {
       const at = a.createdAtMs || 0;
@@ -233,7 +237,7 @@ export async function queryMistakeCards(db, { subjectId, keyword = '', offset = 
   if (!subjectId) return [];
 
   const q = normalizeSearchText(keyword);
-  const roundNo = getSelectedRoundNo(subjectId);
+  const roundNo = getSelectedReviewRound(subjectId);
   const pendingId = getPendingOpenId(subjectId, roundNo);
   const reversed = isMistakeListReversed(subjectId);
   let cards = [];
@@ -249,7 +253,17 @@ export async function queryMistakeCards(db, { subjectId, keyword = '', offset = 
     const exists = cards.some(card => String(card.id) === String(pendingId));
     if (!exists) {
       const pendingCard = await db.mistakeCards.get(pendingId);
-      if (pendingCard && pendingCard.subjectId === subjectId && cardMatchesKeyword(pendingCard, q)) {
+      const belongsToRound = await isMistakeInReviewRound(db, {
+        subjectId,
+        roundNo,
+        mistakeId: pendingId,
+      });
+      if (
+        belongsToRound &&
+        pendingCard &&
+        pendingCard.subjectId === subjectId &&
+        cardMatchesKeyword(pendingCard, q)
+      ) {
         cards = [pendingCard, ...cards.filter(card => String(card.id) !== String(pendingId))].slice(0, limit);
       }
     } else {

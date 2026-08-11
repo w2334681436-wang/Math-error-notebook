@@ -217,6 +217,7 @@ async function moveMistakeToSubject(mistakeId, targetSubjectId) {
   const now = new Date();
   const tables = [db.mistakes, db.mistakeCards];
   if (db.reviewRoundItems) tables.push(db.reviewRoundItems);
+  if (db.reviewRoundExclusions) tables.push(db.reviewRoundExclusions);
 
   await db.transaction('rw', ...tables, async () => {
     await db.mistakes.update(mistakeId, {
@@ -230,6 +231,9 @@ async function moveMistakeToSubject(mistakeId, targetSubjectId) {
     // 跨学科后，原来的“第二轮/第三轮”归属已经不可靠，清掉旧轮次项，避免错题在旧学科轮次里残留。
     if (db.reviewRoundItems) {
       await db.reviewRoundItems.where('mistakeId').equals(mistakeId).delete();
+    }
+    if (db.reviewRoundExclusions) {
+      await db.reviewRoundExclusions.where('mistakeId').equals(mistakeId).delete();
     }
   });
 }

@@ -181,7 +181,15 @@ function selectedContentLabels(options) {
   return labels;
 }
 
-function createMistakeRecord({ mistake, subjectName, questionFiles, analysisFiles, roundItems, options }) {
+function createMistakeRecord({
+  mistake,
+  subjectName,
+  questionFiles,
+  analysisFiles,
+  roundItems,
+  roundExclusions,
+  options,
+}) {
   const record = { ...mistake };
   delete record.questionImg;
   delete record.questionImages;
@@ -211,12 +219,23 @@ function createMistakeRecord({ mistake, subjectName, questionFiles, analysisFile
     const explicitRounds = roundItems
       .map(item => Number(item.roundNo))
       .filter(roundNo => Number.isFinite(roundNo) && roundNo >= 2);
+    const excludedRounds = new Set(
+      roundExclusions
+        .map(item => Number(item.roundNo))
+        .filter(roundNo => Number.isFinite(roundNo) && roundNo >= 1)
+    );
 
     result.masteryStatus = mistake.isMastered ? '已掌握' : '仍需复习';
-    result.reviewRounds = [...new Set([1, ...explicitRounds])].sort((a, b) => a - b);
+    result.reviewRounds = [...new Set([1, ...explicitRounds])]
+      .filter(roundNo => !excludedRounds.has(roundNo))
+      .sort((a, b) => a - b);
     result.reviewRoundItems = roundItems.map(item => ({
       ...item,
       decidedAt: toIsoString(item.decidedAt),
+    }));
+    result.reviewRoundExclusions = roundExclusions.map(item => ({
+      ...item,
+      removedAt: toIsoString(item.removedAt),
     }));
   }
 
@@ -272,7 +291,18 @@ function createMistakeMarkdown(record, options) {
   }
 
   if (options.includeReviewInfo) {
-    lines.push('## 结构化复习记录', '', '```json', JSON.stringify(record.reviewRoundItems, null, 2), '```', '');
+    lines.push(
+      '## 结构化复习记录',
+      '',
+      '```json',
+      JSON.stringify({
+        reviewRounds: record.reviewRounds,
+        reviewRoundItems: record.reviewRoundItems,
+        reviewRoundExclusions: record.reviewRoundExclusions,
+      }, null, 2),
+      '```',
+      ''
+    );
   }
 
   return lines.join('\n');
@@ -308,7 +338,15 @@ function createReadme(summary, options) {
 `;
 }
 
-function createSummary({ subjects, mistakes, reviewRoundItems, options, appVersion, outputFormat }) {
+function createSummary({
+  subjects,
+  mistakes,
+  reviewRoundItems,
+  reviewRoundExclusions,
+  options,
+  appVersion,
+  outputFormat,
+}) {
   const subjectStats = subjects.map(subject => {
     const subjectMistakes = mistakes.filter(mistake => String(mistake.subjectId) === String(subject.id));
     const stats = {
@@ -338,11 +376,12 @@ function createSummary({ subjects, mistakes, reviewRoundItems, options, appVersi
     counts.mastered = mistakes.filter(mistake => mistake.isMastered).length;
     counts.needsReview = mistakes.filter(mistake => !mistake.isMastered).length;
     counts.reviewRoundItems = reviewRoundItems.length;
+    counts.reviewRoundExclusions = reviewRoundExclusions.length;
   }
 
   return {
     format: 'MathNotebookAIArchive',
-    formatVersion: 2,
+    formatVersion: 3,
     outputFormat,
     exportedAt: new Date().toISOString(),
     appVersion,
@@ -362,6 +401,7 @@ export async function buildAiArchive({
   subjects = [],
   mistakes = [],
   reviewRoundItems = [],
+  reviewRoundExclusions = [],
   reviewState = [],
   appVersion = 'unknown',
   options: rawOptions = {},
@@ -370,6 +410,7 @@ export async function buildAiArchive({
   const options = normalizeOptions(rawOptions);
   const subjectById = new Map(subjects.map(subject => [String(subject.id), subject]));
   const roundsByMistakeId = new Map();
+  const exclusionsByMistakeId = new Map();
 
   reviewRoundItems.forEach(item => {
     const key = String(item.mistakeId);
@@ -377,10 +418,17 @@ export async function buildAiArchive({
     roundsByMistakeId.get(key).push(item);
   });
 
+  reviewRoundExclusions.forEach(item => {
+    const key = String(item.mistakeId);
+    if (!exclusionsByMistakeId.has(key)) exclusionsByMistakeId.set(key, []);
+    exclusionsByMistakeId.get(key).push(item);
+  });
+
   const provisionalSummary = createSummary({
     subjects,
     mistakes,
     reviewRoundItems,
+    reviewRoundExclusions,
     options,
     appVersion,
     outputFormat: 'markdown',
@@ -437,6 +485,7 @@ export async function buildAiArchive({
       questionFiles,
       analysisFiles,
       roundItems: roundsByMistakeId.get(String(mistake.id)) || [],
+      roundExclusions: exclusionsByMistakeId.get(String(mistake.id)) || [],
       options,
     });
     const recordMarkdown = createMistakeMarkdown(record, options);
@@ -445,7 +494,9 @@ export async function buildAiArchive({
       const markdownPath = `${folderPath}/错题详情.md`;
       addTextFile(zip, markdownPath, recordMarkdown);
       jsonLines.push(JSON.stringify({ type: 'mistake', record }));
-      const status = options.includeReviewInfo ? `｜${record.masteryStatus}｜轮次 ${record.reviewRounds.join('、')}` : '';
+      const status = options.includeReviewInfo
+        ? `｜${record.masteryStatus}｜轮次 ${record.reviewRounds.join('、') || '无'}`
+        : '';
       indexLines.push(`${globalIndex + 1}. [${oneLine(record.title, '未命名错题')}](${markdownPath}) — ${subjectName}${status}`);
     } else {
       markdownRecords.push(indentHeadings(recordMarkdown));
@@ -468,7 +519,11 @@ export async function buildAiArchive({
     addTextFile(zip, 'README_FOR_AI.md', createReadme(summary, options));
     addTextFile(zip, 'summary.json', JSON.stringify(summary, null, 2));
     if (options.includeReviewInfo) {
-      addTextFile(zip, 'review-rounds.json', JSON.stringify({ reviewRoundItems, reviewState }, null, 2));
+      addTextFile(zip, 'review-rounds.json', JSON.stringify({
+        reviewRoundItems,
+        reviewRoundExclusions,
+        reviewState,
+      }, null, 2));
     }
     addTextFile(zip, 'mistakes.jsonl', `${jsonLines.join('\n')}\n`);
     addTextFile(zip, '错题总目录.md', `${indexLines.join('\n')}\n`);
@@ -491,10 +546,11 @@ export async function buildAiArchive({
 
 export async function exportMistakesForAI({ db, appVersion, options: rawOptions, onProgress }) {
   const options = normalizeOptions(rawOptions);
-  const [allSubjects, allMistakes, allReviewRoundItems] = await Promise.all([
+  const [allSubjects, allMistakes, allReviewRoundItems, allReviewRoundExclusions] = await Promise.all([
     db.subjects.toArray(),
     db.mistakes.orderBy('createdAt').toArray(),
     db.reviewRoundItems ? db.reviewRoundItems.toArray() : Promise.resolve([]),
+    db.reviewRoundExclusions ? db.reviewRoundExclusions.toArray() : Promise.resolve([]),
   ]);
 
   const selectedIds = options.selectedSubjectIds
@@ -514,6 +570,9 @@ export async function exportMistakesForAI({ db, appVersion, options: rawOptions,
   const reviewRoundItems = options.includeReviewInfo
     ? allReviewRoundItems.filter(item => mistakeIds.has(String(item.mistakeId)))
     : [];
+  const reviewRoundExclusions = options.includeReviewInfo
+    ? allReviewRoundExclusions.filter(item => mistakeIds.has(String(item.mistakeId)))
+    : [];
   const reviewState = options.includeReviewInfo
     ? collectReviewState(subjects, typeof window !== 'undefined' ? window.localStorage : null)
     : [];
@@ -522,6 +581,7 @@ export async function exportMistakesForAI({ db, appVersion, options: rawOptions,
     subjects,
     mistakes,
     reviewRoundItems,
+    reviewRoundExclusions,
     reviewState,
     appVersion,
     options,

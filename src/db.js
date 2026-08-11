@@ -79,6 +79,17 @@ db.version(5).stores({
   }
 });
 
+// 版本 6：支持只把题目移出某一轮。
+// 第一轮仍然以全部原题为基础，只额外记录被移出的题；升级不会改写或删除任何原题。
+db.version(6).stores({
+  mistakes: '++id, title, createdAt, subjectId',
+  notes: '++id, parentId, title, type, *tags, order, [parentId+order]',
+  subjects: '++id, name',
+  mistakeCards: 'id, subjectId, createdAtMs, updatedAtMs, title, *tokens, [subjectId+createdAtMs]',
+  reviewRoundItems: '++id, subjectId, roundNo, mistakeId, order, decidedAt, [subjectId+roundNo+order], [subjectId+roundNo+mistakeId]',
+  reviewRoundExclusions: '++id, subjectId, roundNo, mistakeId, removedAt, [subjectId+roundNo], [subjectId+roundNo+mistakeId]'
+});
+
 function sanitizeMistakeRecord(record) {
   if (!record || typeof record !== 'object') return record;
   const copy = { ...record };
