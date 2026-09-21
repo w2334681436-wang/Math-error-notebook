@@ -1815,6 +1815,7 @@ const [aImages, setAImages] = useState(
   const [loading, setLoading] = useState(false);
   const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [isQuestionPreviewMode, setIsQuestionPreviewMode] = useState(false);
+  const [isReflectionPreviewMode, setIsReflectionPreviewMode] = useState(false);
 
   const handleSubmit = async () => {
       if (loading) return;
@@ -1923,8 +1924,25 @@ const [aImages, setAImages] = useState(
         </div>
         
         <div className="border-t border-dashed pt-4">
-            <label className="block text-sm font-bold text-gray-700 mb-2">2. 复盘思路</label>
-            <textarea value={reflection} onChange={e => setReflection(e.target.value)} className="w-full p-3 bg-yellow-50 border border-yellow-200 rounded-xl h-28 text-sm outline-none focus:border-yellow-400 resize-none" placeholder="关键点在哪里？"></textarea>
+          <div className="flex justify-between items-center mb-2 gap-3">
+            <label className="block text-sm font-bold text-gray-700">2. 我的复盘（Markdown）</label>
+            <div className="flex bg-yellow-100/70 p-1 rounded-lg text-xs font-bold shrink-0">
+              <button type="button" onClick={() => setIsReflectionPreviewMode(false)} className={cn("px-3 py-1 rounded-md transition-all", !isReflectionPreviewMode ? "bg-white shadow text-yellow-700" : "text-gray-500")}>编辑</button>
+              <button type="button" onClick={() => setIsReflectionPreviewMode(true)} className={cn("px-3 py-1 rounded-md transition-all", isReflectionPreviewMode ? "bg-white shadow text-yellow-700" : "text-gray-500")}>预览</button>
+            </div>
+          </div>
+          {isReflectionPreviewMode ? (
+            <div className="w-full min-h-[160px] p-4 bg-yellow-50 border border-yellow-200 rounded-xl prose prose-sm max-w-none overflow-x-auto">
+              {reflection.trim() ? <MarkdownView>{reflection}</MarkdownView> : <span className="text-gray-400 italic">暂无复盘内容...</span>}
+            </div>
+          ) : (
+            <textarea
+              value={reflection}
+              onChange={e => setReflection(e.target.value)}
+              className="w-full min-h-[160px] p-3 bg-yellow-50 border border-yellow-200 rounded-xl text-sm outline-none focus:border-yellow-400 resize-y font-mono"
+              placeholder="支持任意 Markdown：标题、列表、表格、代码块、链接、图片，以及 LaTeX 公式……"
+            />
+          )}
         </div>
         
         <div className="border-t border-dashed pt-4">
@@ -1981,6 +1999,7 @@ function RelatedQuestionForm({ initialData, defaultTitle, onSave, onCancel, onDe
   const [analysisText, setAnalysisText] = useState(initialData?.analysisText || '');
   const [analysisImages, setAnalysisImages] = useState(initialData?.analysisImages || []);
   const [questionPreview, setQuestionPreview] = useState(false);
+  const [reflectionPreview, setReflectionPreview] = useState(false);
   const [analysisPreview, setAnalysisPreview] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -2052,8 +2071,25 @@ function RelatedQuestionForm({ initialData, defaultTitle, onSave, onCancel, onDe
       </div>
 
       <div className="border-t border-dashed pt-4">
-        <label className="block text-sm font-bold text-gray-700 mb-2">我的复盘</label>
-        <textarea value={reflection} onChange={e => setReflection(e.target.value)} className="w-full min-h-[110px] p-3 bg-yellow-50 border border-yellow-200 rounded-xl text-sm outline-none focus:border-yellow-400 resize-y" placeholder="这道变式与原题的相同点、变化点、易错点……" />
+        <div className="flex justify-between items-center mb-2 gap-3">
+          <label className="text-sm font-bold text-gray-700">我的复盘（Markdown）</label>
+          <div className="flex bg-yellow-100/70 p-1 rounded-lg text-xs font-bold shrink-0">
+            <button type="button" onClick={() => setReflectionPreview(false)} className={cn('px-3 py-1 rounded-md', !reflectionPreview ? 'bg-white shadow text-yellow-700' : 'text-gray-500')}>编辑</button>
+            <button type="button" onClick={() => setReflectionPreview(true)} className={cn('px-3 py-1 rounded-md', reflectionPreview ? 'bg-white shadow text-yellow-700' : 'text-gray-500')}>预览</button>
+          </div>
+        </div>
+        {reflectionPreview ? (
+          <div className="min-h-[150px] p-4 bg-yellow-50 border border-yellow-200 rounded-xl prose prose-sm max-w-none overflow-x-auto">
+            {reflection.trim() ? <MarkdownView>{reflection}</MarkdownView> : <span className="text-gray-400 italic">暂无复盘内容...</span>}
+          </div>
+        ) : (
+          <textarea
+            value={reflection}
+            onChange={e => setReflection(e.target.value)}
+            className="w-full min-h-[150px] p-3 bg-yellow-50 border border-yellow-200 rounded-xl text-sm outline-none focus:border-yellow-400 resize-y font-mono"
+            placeholder="支持任意 Markdown：标题、列表、表格、代码块、链接、图片，以及 LaTeX 公式……"
+          />
+        )}
       </div>
 
       <div className="border-t border-dashed pt-4">
@@ -2269,7 +2305,9 @@ function MistakeDetail({ mistake, reviewRoundNo, onRemoveFromRound, onEdit, onNe
         <div className={cn('space-y-4 transition-all duration-300', showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden')}>
           <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm">
             <div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div>
-            <p className="whitespace-pre-wrap text-gray-800 leading-relaxed">{activeQuestion.reflection || '暂无复盘记录'}</p>
+            <div className="text-gray-800 leading-relaxed prose prose-sm max-w-none overflow-x-auto prose-p:my-1 prose-headings:my-2 prose-pre:bg-yellow-100/60 prose-pre:text-gray-800 prose-code:text-gray-800">
+              <MarkdownView>{activeQuestion.reflection || '暂无复盘记录'}</MarkdownView>
+            </div>
           </div>
           <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm">
             <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
