@@ -89,6 +89,17 @@ function MarkdownView({ children }) {
       rehypePlugins={[
         [rehypeKatex, { strict: false, throwOnError: false }]
       ]}
+      components={{
+        a: ({ node: _node, ...props }) => (
+          <a {...props} target="_blank" rel="noopener noreferrer" />
+        ),
+        img: ({ node: _node, ...props }) => (
+          <img {...props} loading="lazy" className="max-w-full h-auto rounded-lg" />
+        ),
+        table: ({ node: _node, ...props }) => (
+          <table {...props} className="w-full" />
+        )
+      }}
     >
       {normalizeMarkdownMath(children)}
     </ReactMarkdown>
@@ -216,11 +227,16 @@ const handleExport = async () => {
 
     const counts = {
       mistakes: await db.mistakes.count(),
+      relatedQuestions: 0,
       notes: await db.notes.count(),
       subjects: await db.subjects.count(),
       reviewRoundItems: await db.reviewRoundItems.count(),
       reviewRoundExclusions: await db.reviewRoundExclusions.count()
     };
+
+    await db.mistakes.each(record => {
+      counts.relatedQuestions += Array.isArray(record.relatedQuestions) ? record.relatedQuestions.length : 0;
+    });
 
     const parts = [];
 
@@ -231,7 +247,7 @@ const handleExport = async () => {
     // 第一行是备份元信息
     pushLine({
       format: 'MathNotebookBackupNDJSON',
-      version: 3,
+      version: 4,
       appVersion: APP_VERSION,
       createdAt,
       counts
@@ -277,6 +293,7 @@ const handleExport = async () => {
     alert(
       `✅ 导出成功\n\n` +
       `错题：${counts.mistakes} 条\n` +
+      `举一反三相关题：${counts.relatedQuestions} 条\n` +
       `笔记：${counts.notes} 条\n` +
       `科目：${counts.subjects} 个\n` +
       `轮次题目：${counts.reviewRoundItems} 条\n` +
@@ -398,6 +415,7 @@ const importOldJsonBackup = async (file) => {
 
   return {
     mistakes: importedMistakes.length,
+    relatedQuestions: importedMistakes.reduce((sum, item) => sum + (Array.isArray(item.relatedQuestions) ? item.relatedQuestions.length : 0), 0),
     notes: importedNotes.length,
     subjects: importedSubjects.length,
     reviewRoundItems: importedRoundItems.length,
@@ -411,6 +429,7 @@ const importNdjsonBackup = async (file) => {
 
   const counts = {
     mistakes: 0,
+    relatedQuestions: 0,
     notes: 0,
     subjects: 0,
     reviewRoundItems: 0,
@@ -443,6 +462,9 @@ const importNdjsonBackup = async (file) => {
     }
 
     counts[obj.table] += 1;
+    if (obj.table === 'mistakes') {
+      counts.relatedQuestions += Array.isArray(obj.record.relatedQuestions) ? obj.record.relatedQuestions.length : 0;
+    }
   });
 
   if (!meta) {
@@ -588,6 +610,7 @@ const handleImport = async (e) => {
     alert(
       `✅ 数据导入成功！页面将自动刷新。\n\n` +
       `错题：${result.mistakes} 条\n` +
+      `举一反三相关题：${result.relatedQuestions || 0} 条\n` +
       `笔记：${result.notes} 条\n` +
       `科目：${result.subjects} 个\n` +
       `轮次题目：${result.reviewRoundItems || 0} 条\n` +
@@ -664,9 +687,9 @@ const handleImport = async (e) => {
 
 {activeTab === 'mistakes' && mistakeView === 'detail' && (
   <button
-    onClick={() => setMistakeView('edit')}
+    onClick={() => window.dispatchEvent(new Event('mistake-detail-edit'))}
     className="px-3 py-2 bg-gray-100 text-gray-700 rounded-full shrink-0 flex items-center gap-1 text-xs font-bold hover:bg-gray-200"
-    title="编辑当前错题"
+    title="编辑当前显示的题目"
   >
     <Edit size={16} />
     <span className="hidden sm:inline">编辑</span>
@@ -1732,6 +1755,18 @@ function MistakeList({ mistakes, highlightedId, onAdd, onOpen, onLoadMore, hasMo
                 </span>
               )}
 
+              {item.hasQuestionMarkdown && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-sky-50 text-sky-700 border-sky-100">
+                  Markdown 题目
+                </span>
+              )}
+
+              {item.relatedQuestionCount > 0 && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-violet-50 text-violet-700 border-violet-100">
+                  举一反三 {item.relatedQuestionCount} 题
+                </span>
+              )}
+
               {item.hasAnalysis && (
                 <span className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-purple-50 text-purple-600 border-purple-100">
                   有解析
@@ -1767,6 +1802,7 @@ function MistakeList({ mistakes, highlightedId, onAdd, onOpen, onLoadMore, hasMo
 function MistakeForm({ mode, initialData, onFinish, onCancel, subjectId }) {
   const isEdit = mode === 'edit';
   const [title, setTitle] = useState(initialData?.title || '');
+  const [questionMarkdown, setQuestionMarkdown] = useState(initialData?.questionMarkdown || '');
   
   const [qImages, setQImages] = useState(
     initialData?.questionImages || (initialData?.questionImg ? [initialData.questionImg] : [])
@@ -1778,10 +1814,13 @@ const [aImages, setAImages] = useState(
   const [analysisText, setAnalysisText] = useState(initialData?.analysisText || '');
   const [loading, setLoading] = useState(false);
   const [isPreviewMode, setIsPreviewMode] = useState(false);
+  const [isQuestionPreviewMode, setIsQuestionPreviewMode] = useState(false);
 
   const handleSubmit = async () => {
       if (loading) return;
-  if (qImages.length === 0) return alert("必须上传题目图片");
+  if (qImages.length === 0 && !questionMarkdown.trim()) {
+    return alert("请上传题目图片，或输入 Markdown 格式的题目内容");
+  }
 
   setLoading(true);
 
@@ -1791,6 +1830,7 @@ const [aImages, setAImages] = useState(
     title,
     questionImages: qImages,
     questionImg: qImages[0],
+    questionMarkdown,
     analysisImages: aImages,
     analysisImg: aImages[0] || null,
     analysisText,
@@ -1848,8 +1888,33 @@ const [aImages, setAImages] = useState(
       </div>
       <div className="space-y-4">
         <div>
-            <label className="block text-sm font-bold text-gray-700 mb-2">1. 题目图片 ({qImages.length}) <span className="text-red-500">*</span></label>
+            <label className="block text-sm font-bold text-gray-700 mb-2">1. 题目图片 ({qImages.length})</label>
             <MultiImageUpload images={qImages} onChange={setQImages} />
+        </div>
+
+        <div>
+          <div className="flex justify-between items-center mb-2 gap-3">
+            <label className="block text-sm font-bold text-gray-700">
+              题目 Markdown
+              <span className="ml-2 text-xs font-normal text-gray-400">图片与 Markdown 至少填写一种</span>
+            </label>
+            <div className="flex bg-gray-100 p-1 rounded-lg text-xs font-bold shrink-0">
+              <button type="button" onClick={() => setIsQuestionPreviewMode(false)} className={cn("px-3 py-1 rounded-md transition-all", !isQuestionPreviewMode ? "bg-white shadow text-blue-600" : "text-gray-500")}>编辑</button>
+              <button type="button" onClick={() => setIsQuestionPreviewMode(true)} className={cn("px-3 py-1 rounded-md transition-all", isQuestionPreviewMode ? "bg-white shadow text-blue-600" : "text-gray-500")}>预览</button>
+            </div>
+          </div>
+          {isQuestionPreviewMode ? (
+            <div className="w-full p-4 bg-blue-50/40 border border-blue-100 rounded-xl min-h-[180px] prose prose-sm max-w-none overflow-x-auto">
+              {questionMarkdown.trim() ? <MarkdownView>{questionMarkdown}</MarkdownView> : <span className="text-gray-400 italic">暂无 Markdown 题目内容...</span>}
+            </div>
+          ) : (
+            <textarea
+              value={questionMarkdown}
+              onChange={e => setQuestionMarkdown(e.target.value)}
+              className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl min-h-[180px] text-sm outline-none focus:border-blue-500 resize-y font-mono"
+              placeholder={'支持标准 Markdown、GFM 表格/任务列表、代码块、链接、图片，以及 LaTeX：$x^2$ 或 $$\\int_0^1 x\,dx$$'}
+            />
+          )}
         </div>
 
         <div>
@@ -1908,41 +1973,179 @@ function ImageUpload({ value, onChange, isAnalysis }) {
   )
 }
 
-// --- [修改版] 错题详情：增加复盘自动记录 ---
+function RelatedQuestionForm({ initialData, defaultTitle, onSave, onCancel, onDelete }) {
+  const [title, setTitle] = useState(initialData?.title || defaultTitle || '举一反三题');
+  const [questionMarkdown, setQuestionMarkdown] = useState(initialData?.questionMarkdown || '');
+  const [questionImages, setQuestionImages] = useState(initialData?.questionImages || []);
+  const [reflection, setReflection] = useState(initialData?.reflection || '');
+  const [analysisText, setAnalysisText] = useState(initialData?.analysisText || '');
+  const [analysisImages, setAnalysisImages] = useState(initialData?.analysisImages || []);
+  const [questionPreview, setQuestionPreview] = useState(false);
+  const [analysisPreview, setAnalysisPreview] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    if (saving) return;
+    if (!questionMarkdown.trim() && questionImages.length === 0) {
+      alert('请上传题目图片，或输入 Markdown 格式的题目内容');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const now = new Date();
+      await onSave({
+        ...initialData,
+        id: initialData?.id || `related-${Date.now()}-${generateId()}`,
+        title: title.trim() || defaultTitle || '举一反三题',
+        questionMarkdown,
+        questionImages,
+        reflection,
+        analysisText,
+        analysisImages,
+        createdAt: initialData?.createdAt || now,
+        updatedAt: now,
+      });
+    } catch (error) {
+      console.error(error);
+      alert(`保存相关题失败：${error.message || error}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl p-4 sm:p-6 pb-24 space-y-5 relative w-full max-w-6xl mx-auto">
+      <div className="flex items-center justify-between gap-3 border-b border-gray-100 pb-4">
+        <div>
+          <h2 className="text-lg font-bold text-gray-900">{initialData ? '编辑相关题' : '添加举一反三题'}</h2>
+          <p className="text-xs text-gray-400 mt-1">相关题保存在当前原题下，可在目录中随时切换。</p>
+        </div>
+        <button type="button" onClick={onCancel} className="p-2 rounded-lg bg-gray-100 text-gray-500"><X size={20}/></button>
+      </div>
+
+      <div>
+        <label className="block text-sm font-bold text-gray-700 mb-2">相关题标题</label>
+        <input value={title} onChange={e => setTitle(e.target.value)} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:border-blue-500" placeholder="例如：同类题 1｜换元积分变式" />
+      </div>
+
+      <div>
+        <label className="block text-sm font-bold text-gray-700 mb-2">题目图片（可选）</label>
+        <MultiImageUpload images={questionImages} onChange={setQuestionImages}/>
+      </div>
+
+      <div>
+        <div className="flex justify-between items-center mb-2 gap-3">
+          <label className="text-sm font-bold text-gray-700">题目 Markdown</label>
+          <div className="flex bg-gray-100 p-1 rounded-lg text-xs font-bold">
+            <button type="button" onClick={() => setQuestionPreview(false)} className={cn('px-3 py-1 rounded-md', !questionPreview ? 'bg-white shadow text-blue-600' : 'text-gray-500')}>编辑</button>
+            <button type="button" onClick={() => setQuestionPreview(true)} className={cn('px-3 py-1 rounded-md', questionPreview ? 'bg-white shadow text-blue-600' : 'text-gray-500')}>预览</button>
+          </div>
+        </div>
+        {questionPreview ? (
+          <div className="min-h-[180px] p-4 bg-blue-50/40 border border-blue-100 rounded-xl prose prose-sm max-w-none overflow-x-auto">
+            {questionMarkdown.trim() ? <MarkdownView>{questionMarkdown}</MarkdownView> : <span className="text-gray-400 italic">暂无 Markdown 题目内容...</span>}
+          </div>
+        ) : (
+          <textarea value={questionMarkdown} onChange={e => setQuestionMarkdown(e.target.value)} className="w-full min-h-[180px] p-3 bg-gray-50 border border-gray-200 rounded-xl font-mono text-sm outline-none focus:border-blue-500 resize-y" placeholder="支持标题、列表、表格、代码块、链接、图片、LaTeX 公式等 Markdown 内容" />
+        )}
+      </div>
+
+      <div className="border-t border-dashed pt-4">
+        <label className="block text-sm font-bold text-gray-700 mb-2">我的复盘</label>
+        <textarea value={reflection} onChange={e => setReflection(e.target.value)} className="w-full min-h-[110px] p-3 bg-yellow-50 border border-yellow-200 rounded-xl text-sm outline-none focus:border-yellow-400 resize-y" placeholder="这道变式与原题的相同点、变化点、易错点……" />
+      </div>
+
+      <div className="border-t border-dashed pt-4">
+        <div className="flex justify-between items-center mb-2 gap-3">
+          <label className="text-sm font-bold text-gray-700">答案解析</label>
+          <div className="flex bg-gray-100 p-1 rounded-lg text-xs font-bold">
+            <button type="button" onClick={() => setAnalysisPreview(false)} className={cn('px-3 py-1 rounded-md', !analysisPreview ? 'bg-white shadow text-green-600' : 'text-gray-500')}>编辑</button>
+            <button type="button" onClick={() => setAnalysisPreview(true)} className={cn('px-3 py-1 rounded-md', analysisPreview ? 'bg-white shadow text-green-600' : 'text-gray-500')}>预览</button>
+          </div>
+        </div>
+        <MultiImageUpload images={analysisImages} onChange={setAnalysisImages}/>
+        {analysisPreview ? (
+          <div className="min-h-[160px] mt-3 p-4 bg-gray-50 border border-gray-200 rounded-xl prose prose-sm max-w-none overflow-x-auto">
+            {analysisText.trim() ? <MarkdownView>{analysisText}</MarkdownView> : <span className="text-gray-400 italic">暂无文字解析...</span>}
+          </div>
+        ) : (
+          <textarea value={analysisText} onChange={e => setAnalysisText(e.target.value)} className="w-full min-h-[160px] mt-3 p-3 bg-gray-50 border border-gray-200 rounded-xl font-mono text-sm outline-none focus:border-green-500 resize-y" placeholder="支持 Markdown 与 LaTeX" />
+        )}
+      </div>
+
+      <div className="flex gap-3">
+        {initialData && onDelete && (
+          <button type="button" onClick={onDelete} className="px-4 py-3.5 rounded-xl font-bold text-red-600 bg-red-50 hover:bg-red-100 flex items-center gap-2"><Trash2 size={18}/> 删除</button>
+        )}
+        <button type="button" onClick={submit} disabled={saving} className="flex-1 bg-blue-600 text-white py-3.5 rounded-xl font-bold shadow-md flex justify-center items-center gap-2 disabled:opacity-60"><Save size={18}/>{saving ? '保存中...' : '保存相关题'}</button>
+      </div>
+    </div>
+  );
+}
+
+// --- 错题详情：原题 + 举一反三相关题目录 ---
 function MistakeDetail({ mistake, reviewRoundNo, onRemoveFromRound, onEdit, onNext, hasNext, onPrev, hasPrev, onBack }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
-  
-  // 切换题目时重置解析显示状态
-  useEffect(() => { setShowAnalysis(false); }, [mistake.id]);
+  const [selectedRelatedId, setSelectedRelatedId] = useState(null);
+  const [relatedEditor, setRelatedEditor] = useState(null);
+  const relatedQuestions = Array.isArray(mistake.relatedQuestions) ? mistake.relatedQuestions : [];
+  const activeRelated = relatedQuestions.find(item => item.id === selectedRelatedId) || null;
+  const activeQuestion = activeRelated || mistake;
+  const isOriginal = !activeRelated;
 
-  // [新增] 自动记录复盘行为 (查看解析时触发)
   useEffect(() => {
-    if (showAnalysis) {
-      const today = new Date().toDateString();
-      const logs = mistake.reviewLogs || [];
-      // 获取最后一次复盘的时间（如果存在）
-      const lastLogDate = logs.length > 0 ? new Date(logs[logs.length - 1]).toDateString() : null;
-      
-      // 如果最后一次复盘不是今天，则追加记录
-      if (lastLogDate !== today) {
-        db.mistakes
-  .update(mistake.id, {
-    reviewLogs: [...logs, Date.now()],
-    updatedAt: new Date()
-  })
-  .then(() => refreshMistakeCard(db, mistake.id));
-      }
+    setShowAnalysis(false);
+    setSelectedRelatedId(null);
+    setRelatedEditor(null);
+  }, [mistake.id]);
+
+  useEffect(() => {
+    setShowAnalysis(false);
+  }, [selectedRelatedId]);
+
+  useEffect(() => {
+    if (selectedRelatedId && !relatedQuestions.some(item => item.id === selectedRelatedId)) {
+      setSelectedRelatedId(null);
     }
-  }, [showAnalysis, mistake]);
-  
+  }, [relatedQuestions, selectedRelatedId]);
+
+  useEffect(() => {
+    const editCurrentQuestion = () => {
+      if (activeRelated) setRelatedEditor({ mode: 'edit', question: activeRelated });
+      else onEdit();
+    };
+    window.addEventListener('mistake-detail-edit', editCurrentQuestion);
+    return () => window.removeEventListener('mistake-detail-edit', editCurrentQuestion);
+  }, [activeRelated, onEdit]);
+
+  const saveRelatedQuestion = async (question) => {
+    const current = Array.isArray(mistake.relatedQuestions) ? mistake.relatedQuestions : [];
+    const index = current.findIndex(item => item.id === question.id);
+    const next = [...current];
+    if (index >= 0) next[index] = question;
+    else next.push(question);
+
+    await db.mistakes.update(mistake.id, { relatedQuestions: next, updatedAt: new Date() });
+    await refreshMistakeCard(db, mistake.id);
+    setSelectedRelatedId(question.id);
+    setRelatedEditor(null);
+  };
+
+  const deleteRelatedQuestion = async (questionId) => {
+    if (!confirm('确定删除这道相关题吗？删除后无法恢复。')) return;
+    const next = relatedQuestions.filter(item => item.id !== questionId);
+    await db.mistakes.update(mistake.id, { relatedQuestions: next, updatedAt: new Date() });
+    await refreshMistakeCard(db, mistake.id);
+    setSelectedRelatedId(null);
+    setRelatedEditor(null);
+  };
+
   const handleRemoveFromRound = async () => {
     const roundNo = Number(reviewRoundNo) || 1;
     const roundName = roundNo === 1 ? '第一轮刷题' : `第${roundNo}轮刷题`;
 
-    if (!confirm(
-      `只从“${roundName}”移出这道题吗？\n\n` +
-      '原题、题目图片、解析以及其他轮次都会完整保留。'
-    )) return;
+    if (!confirm(`只从“${roundName}”移出这道题吗？\n\n原题、相关题、题目图片、解析以及其他轮次都会完整保留。`)) return;
 
     try {
       const result = await removeMistakeFromReviewRound(db, {
@@ -1952,33 +2155,21 @@ function MistakeDetail({ mistake, reviewRoundNo, onRemoveFromRound, onEdit, onNe
         title: mistake.title || '未命名错题',
       });
 
-      // 删除最高轮次的最后一题时，把目录安全退回现存最高轮，避免停在已消失的空轮次。
       if (roundNo > 1 && result.remainingInRound === 0) {
-        const remainingItems = await db.reviewRoundItems
-          .where('subjectId')
-          .equals(mistake.subjectId)
-          .toArray();
-        const highestRound = remainingItems.reduce(
-          (highest, item) => Math.max(highest, Number(item.roundNo) || 1),
-          1
-        );
-        if (highestRound < roundNo) {
-          setSelectedReviewRound(mistake.subjectId, highestRound);
-        }
+        const remainingItems = await db.reviewRoundItems.where('subjectId').equals(mistake.subjectId).toArray();
+        const highestRound = remainingItems.reduce((highest, item) => Math.max(highest, Number(item.roundNo) || 1), 1);
+        if (highestRound < roundNo) setSelectedReviewRound(mistake.subjectId, highestRound);
       }
 
       const progressKey = getLastReviewProgressKey(mistake.subjectId, roundNo);
       try {
         const progress = JSON.parse(localStorage.getItem(progressKey) || 'null');
-        if (String(progress?.mistakeId) === String(mistake.id)) {
-          localStorage.removeItem(progressKey);
-        }
+        if (String(progress?.mistakeId) === String(mistake.id)) localStorage.removeItem(progressKey);
       } catch {
         localStorage.removeItem(progressKey);
       }
       localStorage.removeItem('mathNotebook.activeMistakeId');
       localStorage.removeItem('mathNotebook.pendingOpenMistake');
-
       onRemoveFromRound();
     } catch (error) {
       console.error(error);
@@ -1986,109 +2177,115 @@ function MistakeDetail({ mistake, reviewRoundNo, onRemoveFromRound, onEdit, onNe
     }
   };
 
-  // 切换熟练掌握状态
-const toggleMastered = async () => {
-  await db.mistakes.update(mistake.id, {
-    isMastered: !mistake.isMastered,
-    updatedAt: new Date()
-  });
+  const toggleMastered = async () => {
+    await db.mistakes.update(mistake.id, { isMastered: !mistake.isMastered, updatedAt: new Date() });
+    await refreshMistakeCard(db, mistake.id);
+  };
 
-  await refreshMistakeCard(db, mistake.id);
-};
+  if (relatedEditor) {
+    return (
+      <RelatedQuestionForm
+        initialData={relatedEditor.mode === 'edit' ? relatedEditor.question : null}
+        defaultTitle={`举一反三 ${relatedQuestions.length + 1}`}
+        onSave={saveRelatedQuestion}
+        onCancel={() => setRelatedEditor(null)}
+        onDelete={relatedEditor.mode === 'edit' ? () => deleteRelatedQuestion(relatedEditor.question.id) : null}
+      />
+    );
+  }
 
-  // 兼容多图和单图
-  const images = mistake.questionImages || (mistake.questionImg ? [mistake.questionImg] : []);
+  const images = activeQuestion.questionImages || (activeQuestion.questionImg ? [activeQuestion.questionImg] : []);
+  const analysisImages = activeQuestion.analysisImages || (activeQuestion.analysisImg ? [activeQuestion.analysisImg] : []);
+  const createdAt = activeQuestion.createdAt || mistake.createdAt;
 
   return (
     <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl pb-24 overflow-hidden relative">
       <div className="p-4 border-b border-gray-100 flex justify-between items-start bg-white sticky top-0 z-10">
-        <div className="flex items-center gap-3">
-           <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600 transition" title="返回列表"><Home size={20}/></button>
-           <div>
-             <h2 className="font-bold text-lg text-gray-900 leading-snug">{mistake.title || "题目详情"}</h2>
-             <div className="flex items-center gap-2 mt-1">
-                <p className="text-xs text-gray-400">{new Date(mistake.createdAt).toLocaleString()}</p>
-                {mistake.isMastered && <span className="text-[10px] bg-green-100 text-green-700 px-1.5 rounded border border-green-200">已掌握</span>}
-                {/* [新增] 详情页也显示复盘统计 */}
-                <span className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 rounded border border-indigo-100 flex items-center gap-1">
-                   <Calendar size={10} /> 复盘 {getReviewCount(mistake.reviewLogs)} 天
-                </span>
-             </div>
-           </div>
+        <div className="flex items-center gap-3 min-w-0">
+          <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600 transition shrink-0" title="返回列表"><Home size={20}/></button>
+          <div className="min-w-0">
+            <h2 className="font-bold text-lg text-gray-900 leading-snug truncate">{activeQuestion.title || (isOriginal ? '题目详情' : '举一反三题')}</h2>
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              <p className="text-xs text-gray-400">{new Date(createdAt).toLocaleString()}</p>
+              {!isOriginal && <span className="text-[10px] bg-violet-50 text-violet-700 px-1.5 rounded border border-violet-200">相关题</span>}
+              {isOriginal && mistake.isMastered && <span className="text-[10px] bg-green-100 text-green-700 px-1.5 rounded border border-green-200">已掌握</span>}
+              {isOriginal && <span className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 rounded border border-indigo-100 flex items-center gap-1"><Calendar size={10}/> 复盘 {getReviewCount(mistake.reviewLogs)} 天</span>}
+            </div>
+          </div>
         </div>
-        <button onClick={onEdit} className="p-2 bg-gray-50 text-blue-600 rounded-lg hover:bg-blue-50"><Edit size={18} /></button>
+        <button onClick={() => isOriginal ? onEdit() : setRelatedEditor({ mode: 'edit', question: activeRelated })} className="p-2 bg-gray-50 text-blue-600 rounded-lg hover:bg-blue-50 shrink-0" title={isOriginal ? '编辑原题' : '编辑相关题'}><Edit size={18}/></button>
       </div>
-      
+
       <div className="p-4 space-y-6">
-        {/* 题目图片 */}
+        <section className="rounded-2xl border border-violet-100 bg-gradient-to-br from-violet-50/70 to-blue-50/60 p-4">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div>
+              <h3 className="font-bold text-gray-900 flex items-center gap-2"><FileText size={18} className="text-violet-600"/> 举一反三题目目录</h3>
+              <p className="text-xs text-gray-500 mt-1">当前原题下共 {relatedQuestions.length} 道相关题，点击即可切换。</p>
+            </div>
+            <button onClick={() => setRelatedEditor({ mode: 'add' })} className="px-3 py-2 rounded-xl bg-violet-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm hover:bg-violet-700 shrink-0"><Plus size={16}/> 添加相关题</button>
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+            <button onClick={() => setSelectedRelatedId(null)} className={cn('px-4 py-2.5 rounded-xl border text-sm font-bold whitespace-nowrap transition', isOriginal ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300')}>原题</button>
+            {relatedQuestions.map((item, index) => (
+              <button key={item.id} onClick={() => setSelectedRelatedId(item.id)} className={cn('px-4 py-2.5 rounded-xl border text-sm font-bold whitespace-nowrap transition max-w-[240px] truncate', selectedRelatedId === item.id ? 'bg-violet-600 text-white border-violet-600 shadow-sm' : 'bg-white text-gray-600 border-gray-200 hover:border-violet-300')} title={item.title || `相关题 ${index + 1}`}>
+                {index + 1}. {item.title || `相关题 ${index + 1}`}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        {activeQuestion.questionMarkdown?.trim() && (
+          <div className="rounded-xl border border-blue-100 bg-blue-50/30 p-4 sm:p-5 overflow-x-auto prose prose-sm sm:prose-base max-w-none">
+            <MarkdownView>{activeQuestion.questionMarkdown}</MarkdownView>
+          </div>
+        )}
+
         <div className="space-y-2">
           {images.map((img, idx) => (
             <div key={idx} className="rounded-xl overflow-hidden border border-gray-100 shadow-sm relative">
-               <img src={img} alt={`题目 ${idx+1}`} className="w-full" />
-               {images.length > 1 && <div className="absolute top-2 left-2 bg-black/50 text-white text-xs px-2 py-1 rounded-full backdrop-blur-md">{idx + 1}/{images.length}</div>}
+              <img src={img} alt={`题目 ${idx + 1}`} className="w-full"/>
+              {images.length > 1 && <div className="absolute top-2 left-2 bg-black/50 text-white text-xs px-2 py-1 rounded-full backdrop-blur-md">{idx + 1}/{images.length}</div>}
             </div>
           ))}
-          {images.length === 0 && <div className="p-8 text-center text-gray-300 bg-gray-50 rounded-xl">无图片</div>}
+          {images.length === 0 && !activeQuestion.questionMarkdown?.trim() && <div className="p-8 text-center text-gray-300 bg-gray-50 rounded-xl">暂无题目内容</div>}
         </div>
 
-        {/* 底部悬浮栏 */}
         <div className="fixed bottom-20 w-full max-w-6xl left-1/2 -translate-x-1/2 px-4 z-20 flex items-center justify-center pointer-events-none">
           <div className="bg-white/95 backdrop-blur-md p-2 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.15)] border border-gray-200 flex items-center gap-2 pointer-events-auto overflow-x-auto no-scrollbar max-w-full">
-             {hasPrev && (<><button onClick={onPrev} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition shrink-0" title="上一题"><ChevronLeft size={24} /></button><div className="h-6 w-[1px] bg-gray-200 shrink-0"></div></>)}
-             
-             <button 
-                onClick={toggleMastered}
-                className={cn(
-                  "flex items-center gap-1 px-4 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap shrink-0",
-                  mistake.isMastered 
-                    ? "bg-green-50 text-green-600 border border-green-200" 
-                    : "bg-gray-100 text-gray-500 hover:bg-gray-200"
-                )}
-             >
+            {isOriginal && hasPrev && (<><button onClick={onPrev} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition shrink-0" title="上一题"><ChevronLeft size={24}/></button><div className="h-6 w-px bg-gray-200 shrink-0"/></>)}
+            {isOriginal && (
+              <button onClick={toggleMastered} className={cn('flex items-center gap-1 px-4 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap shrink-0', mistake.isMastered ? 'bg-green-50 text-green-600 border border-green-200' : 'bg-gray-100 text-gray-500 hover:bg-gray-200')}>
                 {mistake.isMastered ? <><CheckCircle2 size={18}/> 已掌握</> : <><Circle size={18}/> 标记掌握</>}
-             </button>
-
-             <button onClick={() => setShowAnalysis(!showAnalysis)} className={cn("flex items-center gap-2 px-6 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap shrink-0", showAnalysis ? 'bg-gray-100 text-gray-700' : 'bg-blue-600 text-white shadow-lg')}>{showAnalysis ? <><EyeOff size={18}/> 遮住答案</> : <><Eye size={18}/> 查看解析</>}</button>
-             
-             {hasNext && (<><div className="h-6 w-[1px] bg-gray-200 shrink-0"></div><button onClick={onNext} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition shrink-0" title="下一题"><ChevronRight size={24} /></button></>)}
-             <div className="h-6 w-[1px] bg-gray-200 shrink-0"></div>
-             <button
-               onClick={handleRemoveFromRound}
-               className="flex items-center gap-1.5 px-3 py-3 rounded-full text-red-500 bg-red-50 hover:bg-red-100 transition shrink-0 font-bold text-xs whitespace-nowrap"
-               title={`只从第${Number(reviewRoundNo) || 1}轮移出，保留原题和其他轮次`}
-             >
-               <ListX size={19} /> 移出本轮
-             </button>
+              </button>
+            )}
+            {!isOriginal && <button onClick={() => setRelatedEditor({ mode: 'edit', question: activeRelated })} className="flex items-center gap-1.5 px-4 py-3 rounded-full font-bold text-sm bg-violet-50 text-violet-700 border border-violet-200 whitespace-nowrap"><Edit size={18}/> 编辑相关题</button>}
+            <button onClick={() => setShowAnalysis(!showAnalysis)} className={cn('flex items-center gap-2 px-6 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap shrink-0', showAnalysis ? 'bg-gray-100 text-gray-700' : 'bg-blue-600 text-white shadow-lg')}>{showAnalysis ? <><EyeOff size={18}/> 遮住答案</> : <><Eye size={18}/> 查看解析</>}</button>
+            {isOriginal && hasNext && (<><div className="h-6 w-px bg-gray-200 shrink-0"/><button onClick={onNext} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition shrink-0" title="下一题"><ChevronRight size={24}/></button></>)}
+            {isOriginal && <><div className="h-6 w-px bg-gray-200 shrink-0"/><button onClick={handleRemoveFromRound} className="flex items-center gap-1.5 px-3 py-3 rounded-full text-red-500 bg-red-50 hover:bg-red-100 transition shrink-0 font-bold text-xs whitespace-nowrap" title={`只从第${Number(reviewRoundNo) || 1}轮移出，保留原题和其他轮次`}><ListX size={19}/> 移出本轮</button></>}
           </div>
         </div>
 
-        {/* 解析区域 */}
-        <div className={cn("space-y-4 transition-all duration-300", showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden')}>
-          <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm"><div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div><p className="whitespace-pre-wrap text-gray-800 leading-relaxed">{mistake.reflection || "暂无复盘记录"}</p></div>
+        <div className={cn('space-y-4 transition-all duration-300', showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden')}>
+          <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 text-sm">
+            <div className="font-bold text-yellow-800 mb-1 flex items-center gap-1">💡 我的复盘</div>
+            <p className="whitespace-pre-wrap text-gray-800 leading-relaxed">{activeQuestion.reflection || '暂无复盘记录'}</p>
+          </div>
           <div className="bg-white p-4 rounded-xl border-l-4 border-green-500 shadow-sm">
-           <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
-            {/* [修改] 解析图片改为多图列表展示 */}
+            <div className="font-bold text-green-700 mb-2 text-sm">标准解析</div>
             <div className="space-y-2 mb-3">
-              {(mistake.analysisImages || (mistake.analysisImg ? [mistake.analysisImg] : [])).map((img, idx) => (
+              {analysisImages.map((img, idx) => (
                 <div key={idx} className="rounded-lg overflow-hidden border border-gray-100 relative shadow-sm">
-                  <img src={img} alt={`解析图片 ${idx+1}`} className="w-full" />
-                  {/* 如果有多张图，显示序号角标 */}
-                  {(mistake.analysisImages?.length > 1 || (!mistake.analysisImages && mistake.analysisImg)) && (
-                    <div className="absolute top-2 left-2 bg-green-600/80 text-white text-xs px-2 py-0.5 rounded-full backdrop-blur-md">
-                      {idx + 1}
-                    </div>
-                  )}
+                  <img src={img} alt={`解析图片 ${idx + 1}`} className="w-full"/>
+                  {analysisImages.length > 1 && <div className="absolute top-2 left-2 bg-green-600/80 text-white text-xs px-2 py-0.5 rounded-full backdrop-blur-md">{idx + 1}</div>}
                 </div>
               ))}
             </div>
-            
-            <div className="text-gray-700 text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100 prose-pre:text-gray-800 prose-code:text-gray-800">
-  <MarkdownView>
-  {mistake.analysisText || "暂无文字解析"}
-</MarkdownView>
-</div>
+            <div className="text-gray-700 text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100 prose-pre:text-gray-800 prose-code:text-gray-800 overflow-x-auto">
+              <MarkdownView>{activeQuestion.analysisText || '暂无文字解析'}</MarkdownView>
+            </div>
           </div>
-          <div className="h-20"></div>
+          <div className="h-20"/>
         </div>
       </div>
     </div>

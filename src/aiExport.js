@@ -172,7 +172,7 @@ function collectReviewState(subjects, storage) {
 }
 
 function selectedContentLabels(options) {
-  const labels = ['标题与基本索引'];
+  const labels = ['标题、题目 Markdown 与举一反三目录'];
   if (options.includeQuestionImages) labels.push('题目图片');
   if (options.includeReflection) labels.push('我的复盘思路');
   if (options.includeAnalysisText) labels.push('标准解析文字');
@@ -186,6 +186,7 @@ function createMistakeRecord({
   subjectName,
   questionFiles,
   analysisFiles,
+  relatedRecords,
   roundItems,
   roundExclusions,
   options,
@@ -195,6 +196,7 @@ function createMistakeRecord({
   delete record.questionImages;
   delete record.analysisImg;
   delete record.analysisImages;
+  delete record.relatedQuestions;
 
   if (!options.includeReflection) delete record.reflection;
   if (!options.includeAnalysisText) delete record.analysisText;
@@ -210,6 +212,7 @@ function createMistakeRecord({
     createdAt: toIsoString(mistake.createdAt),
     updatedAt: toIsoString(mistake.updatedAt),
     subjectName,
+    relatedQuestions: relatedRecords,
   };
 
   if (options.includeQuestionImages) result.questionImageFiles = questionFiles;
@@ -260,6 +263,10 @@ function createMistakeMarkdown(record, options) {
   }
   lines.push('');
 
+  if (record.questionMarkdown) {
+    lines.push('## 题目 Markdown', '', record.questionMarkdown, '');
+  }
+
   if (options.includeQuestionImages) {
     lines.push('## 题目图片', '');
     if (record.questionImageFiles?.length) {
@@ -288,6 +295,32 @@ function createMistakeMarkdown(record, options) {
     } else {
       lines.push('未保存解析图片。', '');
     }
+  }
+
+  if (record.relatedQuestions?.length) {
+    lines.push('## 举一反三相关题', '');
+    record.relatedQuestions.forEach((item, index) => {
+      lines.push(`### ${index + 1}. ${oneLine(item.title, `相关题 ${index + 1}`)}`, '');
+      if (item.questionMarkdown) lines.push('#### 题目 Markdown', '', item.questionMarkdown, '');
+      if (options.includeQuestionImages) {
+        lines.push('#### 题目图片', '');
+        if (item.questionImageFiles?.length) {
+          item.questionImageFiles.forEach((path, imageIndex) => lines.push(`![相关题 ${index + 1} 题目图片 ${imageIndex + 1}](${path.split('/').pop()})`, ''));
+        } else {
+          lines.push('未保存题目图片。', '');
+        }
+      }
+      if (options.includeReflection) lines.push('#### 我的复盘', '', item.reflection || '暂无复盘记录。', '');
+      if (options.includeAnalysisText) lines.push('#### 答案解析', '', item.analysisText || '暂无文字解析。', '');
+      if (options.includeAnalysisImages) {
+        lines.push('#### 解析图片', '');
+        if (item.analysisImageFiles?.length) {
+          item.analysisImageFiles.forEach((path, imageIndex) => lines.push(`![相关题 ${index + 1} 解析图片 ${imageIndex + 1}](${path.split('/').pop()})`, ''));
+        } else {
+          lines.push('未保存解析图片。', '');
+        }
+      }
+    });
   }
 
   if (options.includeReviewInfo) {
@@ -332,6 +365,7 @@ function createReadme(summary, options) {
 - 应用版本：${summary.appVersion}
 - 科目：${summary.subjects.map(subject => subject.name).join('、') || '无'}
 - 错题总数：${summary.counts.mistakes}${reviewStats}
+- 举一反三相关题：${summary.counts.relatedQuestions}
 - 题目图片：${summary.counts.questionImages}
 - 解析图片：${summary.counts.analysisImages}
 - 已选内容：${summary.includedContent.join('、')}
@@ -364,11 +398,16 @@ function createSummary({
   const counts = {
     subjects: subjects.length,
     mistakes: mistakes.length,
+    relatedQuestions: mistakes.reduce((sum, mistake) => sum + (Array.isArray(mistake.relatedQuestions) ? mistake.relatedQuestions.length : 0), 0),
     questionImages: options.includeQuestionImages
-      ? mistakes.reduce((sum, mistake) => sum + getStoredImages(mistake, 'questionImages', 'questionImg').length, 0)
+      ? mistakes.reduce((sum, mistake) => sum
+        + getStoredImages(mistake, 'questionImages', 'questionImg').length
+        + (Array.isArray(mistake.relatedQuestions) ? mistake.relatedQuestions.reduce((relatedSum, item) => relatedSum + getStoredImages(item, 'questionImages', 'questionImg').length, 0) : 0), 0)
       : 0,
     analysisImages: options.includeAnalysisImages
-      ? mistakes.reduce((sum, mistake) => sum + getStoredImages(mistake, 'analysisImages', 'analysisImg').length, 0)
+      ? mistakes.reduce((sum, mistake) => sum
+        + getStoredImages(mistake, 'analysisImages', 'analysisImg').length
+        + (Array.isArray(mistake.relatedQuestions) ? mistake.relatedQuestions.reduce((relatedSum, item) => relatedSum + getStoredImages(item, 'analysisImages', 'analysisImg').length, 0) : 0), 0)
       : 0,
   };
 
@@ -381,7 +420,7 @@ function createSummary({
 
   return {
     format: 'MathNotebookAIArchive',
-    formatVersion: 3,
+    formatVersion: 4,
     outputFormat,
     exportedAt: new Date().toISOString(),
     appVersion,
@@ -460,6 +499,7 @@ export async function buildAiArchive({
     const folderPath = `错题/${safeFileSegment(subjectName)}/${folderName}`;
     const questionFiles = [];
     const analysisFiles = [];
+    const relatedRecords = [];
 
     if (outputFormat === 'zip' && options.includeQuestionImages) {
       getStoredImages(mistake, 'questionImages', 'questionImg').forEach((dataUrl, imageIndex) => {
@@ -479,11 +519,49 @@ export async function buildAiArchive({
       });
     }
 
+    (Array.isArray(mistake.relatedQuestions) ? mistake.relatedQuestions : []).forEach((item, relatedIndex) => {
+      const relatedNo = String(relatedIndex + 1).padStart(2, '0');
+      const relatedQuestionFiles = [];
+      const relatedAnalysisFiles = [];
+
+      if (outputFormat === 'zip' && options.includeQuestionImages) {
+        getStoredImages(item, 'questionImages', 'questionImg').forEach((dataUrl, imageIndex) => {
+          const parsed = parseDataUrl(dataUrl);
+          if (!parsed) return;
+          const filePath = `${folderPath}/相关题_${relatedNo}_题目_${String(imageIndex + 1).padStart(2, '0')}.${imageExtension(parsed.mime)}`;
+          if (addDataUrlFile(zip, filePath, dataUrl)) relatedQuestionFiles.push(filePath);
+        });
+      }
+
+      if (outputFormat === 'zip' && options.includeAnalysisImages) {
+        getStoredImages(item, 'analysisImages', 'analysisImg').forEach((dataUrl, imageIndex) => {
+          const parsed = parseDataUrl(dataUrl);
+          if (!parsed) return;
+          const filePath = `${folderPath}/相关题_${relatedNo}_解析_${String(imageIndex + 1).padStart(2, '0')}.${imageExtension(parsed.mime)}`;
+          if (addDataUrlFile(zip, filePath, dataUrl)) relatedAnalysisFiles.push(filePath);
+        });
+      }
+
+      const relatedRecord = { ...item };
+      delete relatedRecord.questionImg;
+      delete relatedRecord.questionImages;
+      delete relatedRecord.analysisImg;
+      delete relatedRecord.analysisImages;
+      if (!options.includeReflection) delete relatedRecord.reflection;
+      if (!options.includeAnalysisText) delete relatedRecord.analysisText;
+      relatedRecord.createdAt = toIsoString(item.createdAt);
+      relatedRecord.updatedAt = toIsoString(item.updatedAt);
+      if (options.includeQuestionImages) relatedRecord.questionImageFiles = relatedQuestionFiles;
+      if (options.includeAnalysisImages) relatedRecord.analysisImageFiles = relatedAnalysisFiles;
+      relatedRecords.push(relatedRecord);
+    });
+
     const record = createMistakeRecord({
       mistake,
       subjectName,
       questionFiles,
       analysisFiles,
+      relatedRecords,
       roundItems: roundsByMistakeId.get(String(mistake.id)) || [],
       roundExclusions: exclusionsByMistakeId.get(String(mistake.id)) || [],
       options,

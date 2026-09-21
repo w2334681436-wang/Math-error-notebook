@@ -107,14 +107,22 @@ function cardMatchesKeyword(card, keyword) {
 export function buildMistakeCard(mistake) {
   const questionImages = getQuestionImages(mistake);
   const analysisImages = getAnalysisImages(mistake);
+  const relatedQuestions = Array.isArray(mistake.relatedQuestions) ? mistake.relatedQuestions : [];
   const createdAtMs = toTime(mistake.createdAt);
   const updatedAtMs = toTime(mistake.updatedAt || mistake.createdAt);
   const title = mistake.title || '未命名错题';
   const dateText = new Date(createdAtMs).toLocaleDateString();
   const searchText = normalizeSearchText([
     title,
+    mistake.questionMarkdown || '',
     mistake.reflection || '',
     mistake.analysisText || '',
+    ...relatedQuestions.flatMap(item => [
+      item?.title || '',
+      item?.questionMarkdown || '',
+      item?.reflection || '',
+      item?.analysisText || '',
+    ]),
     dateText,
     mistake.isMastered ? '已掌握 熟练' : '',
     mistake.reflection ? '已复盘' : '待复盘',
@@ -129,6 +137,8 @@ export function buildMistakeCard(mistake) {
     updatedAtMs,
     imageCount: questionImages.length,
     analysisImageCount: analysisImages.length,
+    hasQuestionMarkdown: Boolean(normalizeSearchText(mistake.questionMarkdown)),
+    relatedQuestionCount: relatedQuestions.length,
     hasReflection: Boolean(normalizeSearchText(mistake.reflection)),
     hasAnalysis: Boolean(normalizeSearchText(mistake.analysisText) || analysisImages.length > 0),
     isMastered: Boolean(mistake.isMastered),
