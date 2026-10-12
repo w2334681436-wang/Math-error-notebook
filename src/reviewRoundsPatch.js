@@ -7,7 +7,7 @@
 // 5. 防止热更新/重复挂载/DOM 重绘导致“加入下一轮/已掌握”按钮重复出现。
 import { db } from './db';
 import { refreshMistakeCard } from './searchIndex';
-import { getExcludedMistakeIds } from './reviewRoundActions';
+import { getExcludedMistakeIds, isMistakeInReviewRound } from './reviewRoundActions';
 
 const SELECTED_ROUND_PREFIX = 'mathNotebook.selectedReviewRound.';
 const LAST_PROGRESS_PREFIX = 'mathNotebook.lastReviewProgress.';
@@ -21,6 +21,7 @@ const INSTANCE_KEY = '__mathReviewRoundsPatchStartedV346';
 let roundMenuOpen = false;
 let renderTimer = null;
 let lastRootBox = null;
+let decisionBusy = false;
 
 function toNumber(value, fallback = 1) {
   const n = Number(value);
@@ -433,8 +434,7 @@ async function getCurrentMistakeFromActiveKey() {
   }
 }
 
-async function markProgress(mistake, action) {
-  const currentRound = getSelectedRound(mistake.subjectId);
+async function markProgress(mistake, action, currentRound = getSelectedRound(mistake.subjectId)) {
   const progress = {
     subjectId: mistake.subjectId,
     roundNo: currentRound,
@@ -446,21 +446,30 @@ async function markProgress(mistake, action) {
   localStorage.setItem(lastProgressKey(mistake.subjectId, currentRound), JSON.stringify(progress));
 }
 
-async function addToNextRound(mistake) {
+function cancelProgress(mistake, action, currentRound) {
+  const key = lastProgressKey(mistake.subjectId, currentRound);
+  const progress = safeParseJson(localStorage.getItem(key));
+  if (String(progress?.mistakeId) === String(mistake.id) && progress?.action === action) {
+    localStorage.removeItem(key);
+  }
+}
+
+async function toggleNextRound(mistake, currentRound) {
   if (!db.reviewRoundItems) {
     showToast('复盘轮次表未初始化，请确认已上传完整补丁');
     return;
   }
 
-  const currentRound = getSelectedRound(mistake.subjectId);
   const nextRound = currentRound + 1;
 
-  const existed = await db.reviewRoundItems
-    .where('[subjectId+roundNo+mistakeId]')
-    .equals([mistake.subjectId, nextRound, mistake.id])
-    .first();
-
-  if (!existed) {
+  const added = await db.transaction('rw', db.reviewRoundItems, db.mistakes, async () => {
+    const items = db.reviewRoundItems
+      .where('[subjectId+roundNo+mistakeId]')
+      .equals([mistake.subjectId, nextRound, mistake.id]);
+    if (await items.clone().first()) {
+      await items.delete();
+      return false;
+    }
     await db.reviewRoundItems.add({
       subjectId: mistake.subjectId,
       roundNo: nextRound,
@@ -470,21 +479,28 @@ async function addToNextRound(mistake) {
       decidedAt: new Date(),
       title: mistake.title || '未命名错题'
     });
-  }
-
-  await db.mistakes.update(mistake.id, { isMastered: false, updatedAt: new Date() });
+    await db.mistakes.update(mistake.id, { isMastered: false, updatedAt: new Date() });
+    return true;
+  });
   await refreshMistakeCard(db, mistake.id);
-  await markProgress(mistake, 'nextRound');
-
-  showToast(existed ? `已在第 ${nextRound} 轮中，本题进度已记录` : `已加入第 ${nextRound} 轮刷题`);
+  if (added) await markProgress(mistake, 'nextRound', currentRound);
+  else cancelProgress(mistake, 'nextRound', currentRound);
+  showToast(added ? `已加入第 ${nextRound} 轮刷题` : `已取消加入第 ${nextRound} 轮`);
   await renderRoundDirectory();
 }
 
-async function markMastered(mistake) {
-  await db.mistakes.update(mistake.id, { isMastered: true, updatedAt: new Date() });
+async function toggleMastered(mistake, currentRound) {
+  const isMastered = await db.transaction('rw', db.mistakes, async () => {
+    const current = await db.mistakes.get(mistake.id);
+    if (!current) throw new Error('题目不存在');
+    const next = !current.isMastered;
+    await db.mistakes.update(mistake.id, { isMastered: next, updatedAt: new Date() });
+    return next;
+  });
   await refreshMistakeCard(db, mistake.id);
-  await markProgress(mistake, 'mastered');
-  showToast('已记录：这题已掌握');
+  if (isMastered) await markProgress(mistake, 'mastered', currentRound);
+  else cancelProgress(mistake, 'mastered', currentRound);
+  showToast(isMastered ? '已记录：这题已掌握' : '已取消掌握标记');
   await renderRoundDirectory();
 }
 
@@ -567,6 +583,7 @@ function cleanupDuplicateDecisionButtons(toolbar = null, keepBar = null) {
 }
 
 async function renderDecisionBar() {
+  if (decisionBusy) return;
   let bar = document.getElementById(DECISION_BAR_ID);
 
   if (!isDetailPageVisible() || !isAnalysisOpen()) {
@@ -603,30 +620,44 @@ async function renderDecisionBar() {
 
   const roundNo = getSelectedRound(mistake.subjectId);
   const nextRound = roundNo + 1;
-  const decisionState = JSON.stringify({ mistakeId: mistake.id, nextRound });
+  const inNextRound = await isMistakeInReviewRound(db, {
+    subjectId: mistake.subjectId, roundNo: nextRound, mistakeId: mistake.id
+  });
+  if (decisionBusy) return;
+  const mastered = Boolean(mistake.isMastered);
+  const decisionState = JSON.stringify({ mistakeId: mistake.id, nextRound, inNextRound, mastered });
 
   if (bar.dataset.reviewDecisionState !== decisionState) {
     bar.dataset.reviewDecisionState = decisionState;
     bar.innerHTML = `
-      <button id="math-review-add-next" data-review-decision-button="true" type="button" style="height:34px;border:0;border-radius:999px;background:#2563eb;color:#fff;padding:0 11px;font-size:12px;font-weight:900;box-shadow:0 4px 12px rgba(37,99,235,.22);line-height:1;">
-        加入第${nextRound}轮
+      <button id="math-review-add-next" data-review-decision-button="true" type="button" aria-pressed="${inNextRound}" title="${inNextRound ? '再次点击取消加入' : '加入下一轮刷题'}" style="height:34px;border:0;border-radius:999px;background:${inNextRound ? '#dbeafe' : '#2563eb'};color:${inNextRound ? '#1d4ed8' : '#fff'};padding:0 11px;font-size:12px;font-weight:900;box-shadow:0 4px 12px rgba(37,99,235,.22);line-height:1;">
+        ${inNextRound ? '取消加入' : '加入'}第${nextRound}轮
       </button>
-      <button id="math-review-mastered" data-review-decision-button="true" type="button" style="height:34px;border:0;border-radius:999px;background:#dcfce7;color:#166534;padding:0 11px;font-size:12px;font-weight:900;line-height:1;">
-        已掌握
+      <button id="math-review-mastered" data-review-decision-button="true" type="button" aria-pressed="${mastered}" title="${mastered ? '再次点击取消掌握标记' : '标记这题已掌握'}" style="height:34px;border:0;border-radius:999px;background:${mastered ? '#dcfce7' : '#f1f5f9'};color:${mastered ? '#166534' : '#64748b'};padding:0 11px;font-size:12px;font-weight:900;line-height:1;">
+        ${mastered ? '已掌握 · 取消' : '标记掌握'}
       </button>
     `;
 
-    bar.querySelector('#math-review-add-next')?.addEventListener('click', async (event) => {
+    const handleDecision = async (event, action) => {
       event.stopPropagation();
-      const current = await getCurrentMistakeFromActiveKey();
-      if (current) await addToNextRound(current);
-    });
+      if (decisionBusy) return;
+      decisionBusy = true;
+      bar.querySelectorAll('button').forEach(button => { button.disabled = true; });
+      try {
+        const current = await db.mistakes.get(mistake.id);
+        if (current) await action(current, roundNo);
+      } catch (error) {
+        console.error('[reviewRoundsPatch]', error);
+        showToast('操作失败，请重试');
+      } finally {
+        decisionBusy = false;
+        bar.querySelectorAll('button').forEach(button => { button.disabled = false; });
+        await renderDecisionBar();
+      }
+    };
 
-    bar.querySelector('#math-review-mastered')?.addEventListener('click', async (event) => {
-      event.stopPropagation();
-      const current = await getCurrentMistakeFromActiveKey();
-      if (current) await markMastered(current);
-    });
+    bar.querySelector('#math-review-add-next')?.addEventListener('click', event => handleDecision(event, toggleNextRound));
+    bar.querySelector('#math-review-mastered')?.addEventListener('click', event => handleDecision(event, toggleMastered));
   }
 
   toolbar.style.maxWidth = 'calc(100vw - 16px)';
