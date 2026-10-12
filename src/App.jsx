@@ -1,4 +1,6 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useId } from 'react';
+import { createPortal } from 'react-dom';
+import { toggleNextRound, toggleMastered as toggleReviewMastered } from './reviewRoundsPatch';
 import { db } from './db';
 import {
   MISTAKE_PAGE_SIZE,
@@ -35,6 +37,7 @@ import {
   getLastReviewProgressKey,
   removeMistakeFromReviewRound,
   setSelectedReviewRound,
+  isMistakeInReviewRound,
 } from './reviewRoundActions';
 
 // --- 工具函数 ---
@@ -2120,11 +2123,96 @@ function RelatedQuestionForm({ initialData, defaultTitle, onSave, onCancel, onDe
   );
 }
 
+// 原题和悬浮题目面板共用同一套内容，保证文字、公式和全部图片一致。
+function QuestionContent({ question }) {
+  const images = question.questionImages || (question.questionImg ? [question.questionImg] : []);
+  return (
+    <div className="space-y-3">
+      {question.questionMarkdown?.trim() && (
+        <div className="rounded-xl border border-blue-100 bg-blue-50/30 p-4 sm:p-5 overflow-x-auto prose prose-sm sm:prose-base max-w-none">
+          <MarkdownView>{question.questionMarkdown}</MarkdownView>
+        </div>
+      )}
+      <div className="space-y-2">
+        {images.map((img, idx) => (
+          <div key={idx} className="rounded-xl overflow-hidden border border-gray-100 shadow-sm relative">
+            <img src={img} alt={`题目 ${idx + 1}`} className="w-full"/>
+            {images.length > 1 && <div className="absolute top-2 left-2 bg-black/50 text-white text-xs px-2 py-1 rounded-full backdrop-blur-md">{idx + 1}/{images.length}</div>}
+          </div>
+        ))}
+        {images.length === 0 && !question.questionMarkdown?.trim() && <div className="p-8 text-center text-gray-300 bg-gray-50 rounded-xl">暂无题目内容</div>}
+      </div>
+    </div>
+  );
+}
+
+function QuestionPeek({ question }) {
+  const [open, setOpen] = useState(false);
+  const toggleRef = useRef(null);
+  const contentId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = event => {
+      if (event.key === 'Escape' && !event.defaultPrevented) {
+        setOpen(false);
+        toggleRef.current?.focus({ preventScroll: true });
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open]);
+
+  return createPortal(
+    <aside
+      data-question-peek
+      aria-label="悬浮题目"
+      className="fixed right-4 z-50 rounded-2xl border border-blue-200 bg-white shadow-xl overflow-hidden"
+      style={{ top: 'calc(72px + env(safe-area-inset-top, 0px))', width: open ? 'min(780px, calc(100% - 32px))' : undefined }}
+    >
+      <div className="flex items-center gap-3 p-2">
+        {open && <span className="min-w-0 flex-1 truncate pl-2 text-sm font-bold text-gray-800">{question.title || '当前题目'}</span>}
+        <button
+          ref={toggleRef}
+          type="button"
+          aria-expanded={open}
+          aria-controls={contentId}
+          onClick={() => setOpen(value => !value)}
+          className="flex items-center gap-1.5 shrink-0 rounded-xl bg-blue-600 px-3 py-2 text-sm font-bold text-white hover:bg-blue-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+        >
+          <FileText size={17}/>
+          {open ? '收起题目' : '显示题目'}
+          {open ? <ChevronDown size={16} className="rotate-180"/> : <ChevronDown size={16}/>}
+        </button>
+      </div>
+      <div
+        id={contentId}
+        hidden={!open}
+        role="region"
+        aria-label="当前题目内容"
+        tabIndex={open ? 0 : -1}
+        className="overflow-auto overscroll-contain border-t border-blue-100 p-3 sm:p-4"
+        style={{ maxHeight: '45vh', WebkitOverflowScrolling: 'touch' }}
+      >
+        {open && <QuestionContent question={question}/>}
+      </div>
+    </aside>,
+    document.body
+  );
+}
+
 // --- 错题详情：原题 + 举一反三相关题目录 ---
 function MistakeDetail({ mistake, reviewRoundNo, onRemoveFromRound, onEdit, onNext, hasNext, onPrev, hasPrev, onBack }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
   const [selectedRelatedId, setSelectedRelatedId] = useState(null);
   const [relatedEditor, setRelatedEditor] = useState(null);
+  const [decisionSaving, setDecisionSaving] = useState(false);
+  const decisionLock = useRef(false);
+  const currentRound = Number(reviewRoundNo) || 1;
+  const nextRound = currentRound + 1;
+  const inNextRound = useLiveQuery(() => isMistakeInReviewRound(db, {
+    subjectId: mistake.subjectId, roundNo: nextRound, mistakeId: mistake.id,
+  }), [mistake.subjectId, nextRound, mistake.id]);
   const relatedQuestions = Array.isArray(mistake.relatedQuestions) ? mistake.relatedQuestions : [];
   const activeRelated = relatedQuestions.find(item => item.id === selectedRelatedId) || null;
   const activeQuestion = activeRelated || mistake;
@@ -2213,9 +2301,20 @@ function MistakeDetail({ mistake, reviewRoundNo, onRemoveFromRound, onEdit, onNe
     }
   };
 
-  const toggleMastered = async () => {
-    await db.mistakes.update(mistake.id, { isMastered: !mistake.isMastered, updatedAt: new Date() });
-    await refreshMistakeCard(db, mistake.id);
+  const handleReviewDecision = async action => {
+    if (decisionLock.current) return;
+    decisionLock.current = true;
+    setDecisionSaving(true);
+    try {
+      const current = await db.mistakes.get(mistake.id);
+      if (current) await action(current, currentRound);
+    } catch (error) {
+      console.error(error);
+      alert('操作失败，请重试');
+    } finally {
+      decisionLock.current = false;
+      setDecisionSaving(false);
+    }
   };
 
   if (relatedEditor) {
@@ -2230,12 +2329,12 @@ function MistakeDetail({ mistake, reviewRoundNo, onRemoveFromRound, onEdit, onNe
     );
   }
 
-  const images = activeQuestion.questionImages || (activeQuestion.questionImg ? [activeQuestion.questionImg] : []);
   const analysisImages = activeQuestion.analysisImages || (activeQuestion.analysisImg ? [activeQuestion.analysisImg] : []);
   const createdAt = activeQuestion.createdAt || mistake.createdAt;
 
   return (
     <div className="bg-white min-h-screen sm:min-h-0 sm:rounded-xl pb-24 overflow-hidden relative">
+      {showAnalysis && <QuestionPeek key={`${mistake.id}:${selectedRelatedId || 'original'}`} question={activeQuestion}/>}
       <div className="p-4 border-b border-gray-100 flex justify-between items-start bg-white sticky top-0 z-10">
         <div className="flex items-center gap-3 min-w-0">
           <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-600 transition shrink-0" title="返回列表"><Home size={20}/></button>
@@ -2271,35 +2370,21 @@ function MistakeDetail({ mistake, reviewRoundNo, onRemoveFromRound, onEdit, onNe
           </div>
         </section>
 
-        {activeQuestion.questionMarkdown?.trim() && (
-          <div className="rounded-xl border border-blue-100 bg-blue-50/30 p-4 sm:p-5 overflow-x-auto prose prose-sm sm:prose-base max-w-none">
-            <MarkdownView>{activeQuestion.questionMarkdown}</MarkdownView>
-          </div>
-        )}
+        <QuestionContent question={activeQuestion}/>
 
-        <div className="space-y-2">
-          {images.map((img, idx) => (
-            <div key={idx} className="rounded-xl overflow-hidden border border-gray-100 shadow-sm relative">
-              <img src={img} alt={`题目 ${idx + 1}`} className="w-full"/>
-              {images.length > 1 && <div className="absolute top-2 left-2 bg-black/50 text-white text-xs px-2 py-1 rounded-full backdrop-blur-md">{idx + 1}/{images.length}</div>}
-            </div>
-          ))}
-          {images.length === 0 && !activeQuestion.questionMarkdown?.trim() && <div className="p-8 text-center text-gray-300 bg-gray-50 rounded-xl">暂无题目内容</div>}
-        </div>
-
-        <div className="fixed bottom-20 w-full max-w-6xl left-1/2 -translate-x-1/2 px-4 z-20 flex items-center justify-center pointer-events-none">
-          <div className="bg-white/95 backdrop-blur-md p-2 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.15)] border border-gray-200 flex items-center gap-2 pointer-events-auto overflow-x-auto no-scrollbar max-w-full">
-            {isOriginal && hasPrev && (<><button onClick={onPrev} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition shrink-0" title="上一题"><ChevronLeft size={24}/></button><div className="h-6 w-px bg-gray-200 shrink-0"/></>)}
-            {isOriginal && (
-              <button onClick={toggleMastered} className={cn('flex items-center gap-1 px-4 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap shrink-0', mistake.isMastered ? 'bg-green-50 text-green-600 border border-green-200' : 'bg-gray-100 text-gray-500 hover:bg-gray-200')}>
-                {mistake.isMastered ? <><CheckCircle2 size={18}/> 已掌握</> : <><Circle size={18}/> 标记掌握</>}
-              </button>
-            )}
-            {!isOriginal && <button onClick={() => setRelatedEditor({ mode: 'edit', question: activeRelated })} className="flex items-center gap-1.5 px-4 py-3 rounded-full font-bold text-sm bg-violet-50 text-violet-700 border border-violet-200 whitespace-nowrap"><Edit size={18}/> 编辑相关题</button>}
-            <button onClick={() => setShowAnalysis(!showAnalysis)} className={cn('flex items-center gap-2 px-6 py-3 rounded-full font-bold text-sm transition-all whitespace-nowrap shrink-0', showAnalysis ? 'bg-gray-100 text-gray-700' : 'bg-blue-600 text-white shadow-lg')}>{showAnalysis ? <><EyeOff size={18}/> 遮住答案</> : <><Eye size={18}/> 查看解析</>}</button>
-            {isOriginal && hasNext && (<><div className="h-6 w-px bg-gray-200 shrink-0"/><button onClick={onNext} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition shrink-0" title="下一题"><ChevronRight size={24}/></button></>)}
-            {isOriginal && <><div className="h-6 w-px bg-gray-200 shrink-0"/><button onClick={handleRemoveFromRound} className="flex items-center gap-1.5 px-3 py-3 rounded-full text-red-500 bg-red-50 hover:bg-red-100 transition shrink-0 font-bold text-xs whitespace-nowrap" title={`只从第${Number(reviewRoundNo) || 1}轮移出，保留原题和其他轮次`}><ListX size={19}/> 移出本轮</button></>}
-          </div>
+        <div className="math-detail-toolbar" data-review-toolbar="fixed" role="toolbar" aria-label="题目操作">
+          <button type="button" onClick={onPrev} disabled={!isOriginal || !hasPrev} className="math-toolbar-prev bg-blue-50 text-blue-600" title="上一题" aria-label="上一题"><ChevronLeft size={24}/></button>
+          <button type="button" onClick={() => isOriginal ? handleReviewDecision(toggleReviewMastered) : setRelatedEditor({ mode: 'edit', question: activeRelated })} disabled={decisionSaving} aria-pressed={isOriginal ? Boolean(mistake.isMastered) : undefined} className={cn('math-toolbar-mastered', isOriginal && mistake.isMastered ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-600')} title={isOriginal ? (mistake.isMastered ? '再次点击取消掌握标记' : '标记掌握') : '编辑相关题'}>
+            {isOriginal ? (mistake.isMastered ? <><CheckCircle2 size={17}/> 已掌握</> : <><Circle size={17}/> 标记掌握</>) : <><Edit size={17}/> 编辑相关题</>}
+          </button>
+          <button type="button" onClick={() => setShowAnalysis(value => !value)} className={cn('math-toolbar-analysis', showAnalysis ? 'bg-gray-100 text-gray-700' : 'bg-blue-600 text-white')}>
+            {showAnalysis ? <><EyeOff size={18}/> 遮住答案</> : <><Eye size={18}/> 查看解析</>}
+          </button>
+          <button type="button" onClick={() => handleReviewDecision(toggleNextRound)} disabled={!isOriginal || !showAnalysis || decisionSaving || inNextRound === undefined} aria-pressed={Boolean(inNextRound)} className={cn('math-toolbar-round', inNextRound ? 'bg-blue-100 text-blue-700' : 'bg-blue-600 text-white')} title={!showAnalysis ? '查看解析后可操作' : inNextRound ? `取消加入第${nextRound}轮` : `加入第${nextRound}轮`}>
+            {inNextRound ? '取消加入' : '加入'}第{nextRound}轮
+          </button>
+          <button type="button" onClick={onNext} disabled={!isOriginal || !hasNext} className="math-toolbar-next bg-blue-50 text-blue-600" title="下一题" aria-label="下一题"><ChevronRight size={24}/></button>
+          <button type="button" onClick={handleRemoveFromRound} disabled={!isOriginal || decisionSaving} className="math-toolbar-remove bg-red-50 text-red-500" title={`只从第${currentRound}轮移出，保留原题和其他轮次`}><ListX size={17}/> 移出本轮</button>
         </div>
 
         <div className={cn('space-y-4 transition-all duration-300', showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden')}>

@@ -181,6 +181,10 @@ function showToast(message) {
     ].join(';');
     document.body.appendChild(toast);
   }
+  const toolbar = document.querySelector('[data-review-toolbar="fixed"]');
+  toast.style.bottom = toolbar
+    ? `${Math.max(128, window.innerHeight - toolbar.getBoundingClientRect().top + 12)}px`
+    : '128px';
   toast.textContent = message;
   toast.style.opacity = '1';
   clearTimeout(showToast.timer);
@@ -454,7 +458,7 @@ function cancelProgress(mistake, action, currentRound) {
   }
 }
 
-async function toggleNextRound(mistake, currentRound) {
+export async function toggleNextRound(mistake, currentRound) {
   if (!db.reviewRoundItems) {
     showToast('复盘轮次表未初始化，请确认已上传完整补丁');
     return;
@@ -489,7 +493,7 @@ async function toggleNextRound(mistake, currentRound) {
   await renderRoundDirectory();
 }
 
-async function toggleMastered(mistake, currentRound) {
+export async function toggleMastered(mistake, currentRound) {
   const isMastered = await db.transaction('rw', db.mistakes, async () => {
     const current = await db.mistakes.get(mistake.id);
     if (!current) throw new Error('题目不存在');
@@ -584,6 +588,11 @@ function cleanupDuplicateDecisionButtons(toolbar = null, keepBar = null) {
 
 async function renderDecisionBar() {
   if (decisionBusy) return;
+  // React 详情页自带固定槽位按钮，不能再插入或清理它管理的按钮。
+  if (document.querySelector('[data-review-toolbar="fixed"]')) {
+    document.querySelectorAll(`#${DECISION_BAR_ID}`).forEach(bar => bar.remove());
+    return;
+  }
   let bar = document.getElementById(DECISION_BAR_ID);
 
   if (!isDetailPageVisible() || !isAnalysisOpen()) {
