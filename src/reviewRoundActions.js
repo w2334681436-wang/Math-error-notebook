@@ -16,10 +16,15 @@ export function getSelectedReviewRound(subjectId, storage = globalThis.localStor
 
 export function setSelectedReviewRound(subjectId, roundNo, storage = globalThis.localStorage) {
   if (!storage || subjectId === null || subjectId === undefined) return;
+  const previous = getSelectedReviewRound(subjectId, storage);
+  const next = normalizeRoundNo(roundNo);
   storage.setItem(
     `${SELECTED_REVIEW_ROUND_PREFIX}${subjectId}`,
-    String(normalizeRoundNo(roundNo))
+    String(next)
   );
+  if (previous !== next && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('math-notebook-list-context-change', { detail: { subjectId } }));
+  }
 }
 
 export function getLastReviewProgressKey(subjectId, roundNo) {

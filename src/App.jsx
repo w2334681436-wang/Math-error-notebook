@@ -1,9 +1,13 @@
-import React, { useState, useMemo, useEffect, useRef, useId } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useId, useLayoutEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import Dexie from 'dexie';
+import { LIST_CONTEXT_EVENT, readMistakeListState, writeMistakeListState, notifyListContextChanged, clearMistakeNavigationState } from './mistakeListState';
 import { toggleNextRound, toggleMastered as toggleReviewMastered } from './reviewRoundsPatch';
 import { db } from './db';
 import {
   MISTAKE_PAGE_SIZE,
+  isMistakeListReversed,
+  getMistakeListReverseKey,
   buildMistakeCard,
   getSelectedReviewRound,
   queryMistakeCards,
@@ -145,37 +149,41 @@ function App() {
   const [activeTab, setActiveTab] = useState('mistakes'); 
   const [aiExportProgress, setAiExportProgress] = useState(null);
   const [showAiExportDialog, setShowAiExportDialog] = useState(false);
-  
+
   // [新增] 科目管理逻辑
   const subjects = useLiveQuery(() => db.subjects.toArray()) || [];
-  const [activeSubjectId, setActiveSubjectId] = useState(null);
+  const [activeSubjectId, setActiveSubjectId] = useState(() => {
+    const raw = localStorage.getItem('mathNotebook.activeSubjectId');
+    return raw && Number.isFinite(Number(raw)) ? Number(raw) : raw;
+  });
   const [mistakeView, setMistakeView] = useState('list');
 
   // 初始化：如果没有选中科目且加载了科目列表，默认选中第一个
   useEffect(() => {
-    if (!activeSubjectId && subjects.length > 0) {
+    if (subjects.length > 0 && !subjects.some(subject => String(subject.id) === String(activeSubjectId))) {
       setActiveSubjectId(subjects[0].id);
     }
   }, [subjects, activeSubjectId]);
 
-  // 初始化：如果是全新安装（无科目），自动创建默认科目
   useEffect(() => {
-    const initDB = async () => {
-      if (await db.subjects.count() === 0) {
-        await db.subjects.bulkAdd([{ name: '数学' }, { name: '408' }]);
-      }
-    };
-    initDB();
+    if (activeSubjectId !== null) localStorage.setItem('mathNotebook.activeSubjectId', String(activeSubjectId));
+  }, [activeSubjectId]);
+
+  // StrictMode 会执行两次 effect，事务内检查防止生成两组默认科目。
+  useEffect(() => {
+    db.transaction('rw', db.subjects, async () => {
+      if (await db.subjects.count() === 0) await db.subjects.bulkAdd([{ name: '数学' }, { name: '408' }]);
+    }).catch(error => console.error(error));
   }, []);
 
   // 索引自检：防止旧数据、导入数据、异常升级后 mistakeCards 为空。
 // 这里只重建轻量索引，不动原始 mistakes 图片数据。
 useEffect(() => {
   const checkMistakeCards = async () => {
-    const mistakeCount = await db.mistakes.count();
-    const cardCount = await db.mistakeCards.count();
+    const [mistakeCount, cardCount] = await db.transaction('r', db.mistakes, db.mistakeCards, () =>
+      Promise.all([db.mistakes.count(), db.mistakeCards.count()]));
 
-    if (mistakeCount > 0 && cardCount === 0) {
+    if (mistakeCount !== cardCount) {
       await rebuildAllMistakeCards(db);
     }
   };
@@ -317,7 +325,9 @@ const readNdjsonBackup = async (file, onLineObject) => {
   let lineNo = 0;
 
   while (true) {
-    const { value, done } = await reader.read();
+    const read = reader.read();
+    // 只在等待文件 I/O 时维持事务，不把数据库写入包进 waitFor（会相互等待）。
+    const { value, done } = await (Dexie.currentTransaction ? Dexie.waitFor(read) : read);
 
     if (done) break;
 
@@ -361,6 +371,20 @@ const readNdjsonBackup = async (file, onLineObject) => {
   return lineNo;
 };
 
+// JSON 将 Date 转成字符串；只恢复约定的日期字段，不改题面和笔记正文。
+const reviveImportedRecord = record => {
+  const revived = { ...record };
+  for (const key of ['createdAt', 'updatedAt', 'decidedAt', 'removedAt']) {
+    const value = revived[key];
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
+      const date = new Date(value);
+      if (!Number.isNaN(date.getTime())) revived[key] = date;
+    }
+  }
+  if (Array.isArray(revived.relatedQuestions)) revived.relatedQuestions = revived.relatedQuestions.map(reviveImportedRecord);
+  return revived;
+};
+
 // 导入旧版小 JSON 备份
 const importOldJsonBackup = async (file) => {
   const text = await file.text();
@@ -370,11 +394,11 @@ const importOldJsonBackup = async (file) => {
     throw new Error('旧版 JSON 备份格式错误或数据损坏');
   }
 
-  const importedMistakes = backup.data.mistakes || [];
-  const importedNotes = backup.data.notes || [];
+  const importedMistakes = (backup.data.mistakes || []).map(reviveImportedRecord);
+  const importedNotes = (backup.data.notes || []).map(reviveImportedRecord);
   const importedSubjects = backup.data.subjects || [];
-  const importedRoundItems = backup.data.reviewRoundItems || [];
-  const importedRoundExclusions = backup.data.reviewRoundExclusions || [];
+  const importedRoundItems = (backup.data.reviewRoundItems || []).map(reviveImportedRecord);
+  const importedRoundExclusions = (backup.data.reviewRoundExclusions || []).map(reviveImportedRecord);
 
   await db.transaction(
     'rw',
@@ -392,27 +416,26 @@ const importOldJsonBackup = async (file) => {
     await db.reviewRoundItems.clear();
     await db.reviewRoundExclusions.clear();
 
-    if (importedMistakes.length > 0) {
-      await db.mistakes.bulkPut(importedMistakes);
-      await db.mistakeCards.bulkPut(importedMistakes.map(buildMistakeCard));
-    }
-
-    if (importedNotes.length > 0) {
-      await db.notes.bulkPut(importedNotes);
-    }
-
     if (importedSubjects.length > 0) {
       await db.subjects.bulkPut(importedSubjects);
     } else {
       await db.subjects.bulkAdd([{ name: '数学' }, { name: '408' }]);
     }
+    const subjects = await db.subjects.toArray();
+    const normalizeSubject = record => subjects.find(subject => String(subject.id) === String(record.subjectId))?.id || subjects[0].id;
+    const normalizedMistakes = importedMistakes.map(record => ({ ...record, subjectId: normalizeSubject(record) }));
+    if (normalizedMistakes.length > 0) {
+      await db.mistakes.bulkPut(normalizedMistakes);
+      await db.mistakeCards.bulkPut(normalizedMistakes.map(buildMistakeCard));
+    }
+    if (importedNotes.length > 0) await db.notes.bulkPut(importedNotes);
 
     if (importedRoundItems.length > 0) {
-      await db.reviewRoundItems.bulkPut(importedRoundItems);
+      await db.reviewRoundItems.bulkPut(importedRoundItems.map(record => ({ ...record, subjectId: normalizeSubject(record) })));
     }
 
     if (importedRoundExclusions.length > 0) {
-      await db.reviewRoundExclusions.bulkPut(importedRoundExclusions);
+      await db.reviewRoundExclusions.bulkPut(importedRoundExclusions.map(record => ({ ...record, subjectId: normalizeSubject(record) })));
     }
   });
 
@@ -420,7 +443,7 @@ const importOldJsonBackup = async (file) => {
     mistakes: importedMistakes.length,
     relatedQuestions: importedMistakes.reduce((sum, item) => sum + (Array.isArray(item.relatedQuestions) ? item.relatedQuestions.length : 0), 0),
     notes: importedNotes.length,
-    subjects: importedSubjects.length,
+    subjects: importedSubjects.length || 2,
     reviewRoundItems: importedRoundItems.length,
     reviewRoundExclusions: importedRoundExclusions.length
   };
@@ -474,110 +497,134 @@ const importNdjsonBackup = async (file) => {
     throw new Error('备份文件缺少元信息');
   }
 
-  // 第二遍：确认文件可读后，再覆盖写入
-  await db.mistakes.clear();
-  await db.notes.clear();
-  await db.subjects.clear();
-  await db.mistakeCards.clear();
-  await db.reviewRoundItems.clear();
-  await db.reviewRoundExclusions.clear();
-
-  const batches = {
-    mistakes: [],
-    notes: [],
-    subjects: [],
-    reviewRoundItems: [],
-    reviewRoundExclusions: []
-  };
-
-  const BATCH_SIZE = 20;
-
-  const flushSubjects = async () => {
-    if (batches.subjects.length === 0) return;
-    await db.subjects.bulkPut(batches.subjects);
-    batches.subjects = [];
-  };
-
-  const flushNotes = async () => {
-    if (batches.notes.length === 0) return;
-    await db.notes.bulkPut(batches.notes);
-    batches.notes = [];
-  };
-
-  const flushMistakes = async () => {
-    if (batches.mistakes.length === 0) return;
-
-    await db.mistakes.bulkPut(batches.mistakes);
-    await db.mistakeCards.bulkPut(batches.mistakes.map(buildMistakeCard));
-
-    batches.mistakes = [];
-  };
-
-  const flushRoundItems = async () => {
-    if (batches.reviewRoundItems.length === 0) return;
-    await db.reviewRoundItems.bulkPut(batches.reviewRoundItems);
-    batches.reviewRoundItems = [];
-  };
-
-  const flushRoundExclusions = async () => {
-    if (batches.reviewRoundExclusions.length === 0) return;
-    await db.reviewRoundExclusions.bulkPut(batches.reviewRoundExclusions);
-    batches.reviewRoundExclusions = [];
-  };
-
-  await readNdjsonBackup(file, async (obj, lineNo) => {
-    if (lineNo === 1) return;
-
-    if (obj.table === 'subjects') {
-      batches.subjects.push(obj.record);
-
-      if (batches.subjects.length >= BATCH_SIZE) {
-        await flushSubjects();
+  if (meta.counts) {
+    for (const table of ['mistakes', 'notes', 'subjects', 'reviewRoundItems', 'reviewRoundExclusions']) {
+      if (Number.isInteger(meta.counts[table]) && meta.counts[table] !== counts[table]) {
+        throw new Error(`备份中的 ${table} 数量不完整，未修改原数据`);
       }
     }
+  }
 
-    if (obj.table === 'notes') {
-      batches.notes.push(obj.record);
+  // 文件读取不能让 IndexedDB 事务提前结束；任何失败都会回滚，包括旧数据的清空。
+  await db.transaction('rw', db.mistakes, db.notes, db.subjects, db.mistakeCards, db.reviewRoundItems, db.reviewRoundExclusions, async () => {
+    // 第二遍：确认文件可读后，再覆盖写入
+    await db.mistakes.clear();
+    await db.notes.clear();
+    await db.subjects.clear();
+    await db.mistakeCards.clear();
+    await db.reviewRoundItems.clear();
+    await db.reviewRoundExclusions.clear();
 
-      if (batches.notes.length >= BATCH_SIZE) {
-        await flushNotes();
+    const batches = {
+      mistakes: [],
+      notes: [],
+      subjects: [],
+      reviewRoundItems: [],
+      reviewRoundExclusions: []
+    };
+
+    const BATCH_SIZE = 20;
+
+    const flushSubjects = async () => {
+      if (batches.subjects.length === 0) return;
+      await db.subjects.bulkPut(batches.subjects);
+      batches.subjects = [];
+    };
+
+    const flushNotes = async () => {
+      if (batches.notes.length === 0) return;
+      await db.notes.bulkPut(batches.notes);
+      batches.notes = [];
+    };
+
+    const flushMistakes = async () => {
+      if (batches.mistakes.length === 0) return;
+
+      await db.mistakes.bulkPut(batches.mistakes);
+      await db.mistakeCards.bulkPut(batches.mistakes.map(buildMistakeCard));
+
+      batches.mistakes = [];
+    };
+
+    const flushRoundItems = async () => {
+      if (batches.reviewRoundItems.length === 0) return;
+      await db.reviewRoundItems.bulkPut(batches.reviewRoundItems);
+      batches.reviewRoundItems = [];
+    };
+
+    const flushRoundExclusions = async () => {
+      if (batches.reviewRoundExclusions.length === 0) return;
+      await db.reviewRoundExclusions.bulkPut(batches.reviewRoundExclusions);
+      batches.reviewRoundExclusions = [];
+    };
+
+    await readNdjsonBackup(file, async (obj, lineNo) => {
+      if (lineNo === 1) return;
+      obj.record = reviveImportedRecord(obj.record);
+
+      if (obj.table === 'subjects') {
+        batches.subjects.push(obj.record);
+
+        if (batches.subjects.length >= BATCH_SIZE) {
+          await flushSubjects();
+        }
       }
-    }
 
-    if (obj.table === 'mistakes') {
-      batches.mistakes.push(obj.record);
+      if (obj.table === 'notes') {
+        batches.notes.push(obj.record);
 
-      if (batches.mistakes.length >= BATCH_SIZE) {
-        await flushMistakes();
+        if (batches.notes.length >= BATCH_SIZE) {
+          await flushNotes();
+        }
       }
-    }
 
-    if (obj.table === 'reviewRoundItems') {
-      batches.reviewRoundItems.push(obj.record);
+      if (obj.table === 'mistakes') {
+        batches.mistakes.push(obj.record);
 
-      if (batches.reviewRoundItems.length >= BATCH_SIZE) {
-        await flushRoundItems();
+        if (batches.mistakes.length >= BATCH_SIZE) {
+          await flushMistakes();
+        }
       }
-    }
 
-    if (obj.table === 'reviewRoundExclusions') {
-      batches.reviewRoundExclusions.push(obj.record);
+      if (obj.table === 'reviewRoundItems') {
+        batches.reviewRoundItems.push(obj.record);
 
-      if (batches.reviewRoundExclusions.length >= BATCH_SIZE) {
-        await flushRoundExclusions();
+        if (batches.reviewRoundItems.length >= BATCH_SIZE) {
+          await flushRoundItems();
+        }
       }
+
+      if (obj.table === 'reviewRoundExclusions') {
+        batches.reviewRoundExclusions.push(obj.record);
+
+        if (batches.reviewRoundExclusions.length >= BATCH_SIZE) {
+          await flushRoundExclusions();
+        }
+      }
+    });
+
+    await flushSubjects();
+    await flushNotes();
+    await flushMistakes();
+    await flushRoundItems();
+    await flushRoundExclusions();
+
+    if (await db.subjects.count() === 0) {
+      const mathId = await db.subjects.add({ name: '数学' });
+      await db.subjects.add({ name: '408' });
+      await db.mistakes.toCollection().modify({ subjectId: mathId });
+      await db.reviewRoundItems.toCollection().modify({ subjectId: mathId });
+      await db.reviewRoundExclusions.toCollection().modify({ subjectId: mathId });
+      let offset = 0;
+      while (true) {
+        const records = await db.mistakes.orderBy(':id').offset(offset).limit(BATCH_SIZE).toArray();
+        if (!records.length) break;
+        await db.mistakeCards.bulkPut(records.map(buildMistakeCard));
+        offset += records.length;
+      }
+      counts.subjects = 2;
     }
   });
-
-  await flushSubjects();
-  await flushNotes();
-  await flushMistakes();
-  await flushRoundItems();
-  await flushRoundExclusions();
-
-  if (await db.subjects.count() === 0) {
-    await db.subjects.bulkAdd([{ name: '数学' }, { name: '408' }]);
-  }
 
   return counts;
 };
@@ -596,19 +643,12 @@ const handleImport = async (e) => {
     const firstText = await file.slice(0, 4096).text();
     const firstLine = firstText.split(/\r?\n/)[0]?.trim();
 
-    let result;
-
-    try {
-      const firstObj = JSON.parse(firstLine);
-
-      if (firstObj.format === 'MathNotebookBackupNDJSON') {
-        result = await importNdjsonBackup(file);
-      } else {
-        result = await importOldJsonBackup(file);
-      }
-    } catch {
-      result = await importOldJsonBackup(file);
-    }
+    let firstObj;
+    try { firstObj = JSON.parse(firstLine); } catch { /* 多行旧 JSON 的第一行不是完整对象。 */ }
+    const result = firstObj?.format === 'MathNotebookBackupNDJSON'
+      ? await importNdjsonBackup(file)
+      : await importOldJsonBackup(file);
+    clearMistakeNavigationState();
 
     alert(
       `✅ 数据导入成功！页面将自动刷新。\n\n` +
@@ -628,7 +668,7 @@ const handleImport = async (e) => {
     e.target.value = '';
   }
 };
-  
+
   const toggleFullScreen = () => {
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch(e => console.log(e));
@@ -645,7 +685,8 @@ const handleImport = async (e) => {
           <div className="flex-1 flex items-center gap-2 overflow-x-auto no-scrollbar mask-gradient pr-2">
             {subjects.map(sub => (
               <button 
-                key={sub.id} 
+                key={sub.id}
+                data-subject-id={sub.id}
                 onClick={() => {
   setActiveTab('mistakes');
   setMistakeView('list');
@@ -674,7 +715,7 @@ const handleImport = async (e) => {
             知识笔记
           </h1>
         )}
-        
+
         {/* [新增] 右侧功能区：导出、导入、全屏 */}
         <div className="flex items-center gap-1">
           {activeTab === 'mistakes' && mistakeView !== 'list' && (
@@ -728,15 +769,15 @@ const handleImport = async (e) => {
           <button onClick={handleExport} className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0" title="导出备份">
             <Download size={20} />
           </button>
-          
+
           <label className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0 cursor-pointer" title="导入备份">
             <UploadCloud size={20} />
             {/* 隐藏的文件输入框，选中文件后立即触发 handleImport */}
            <input type="file" accept=".json,.mathbackup,application/json" onChange={handleImport} className="hidden" />
           </label>
-          
+
           <div className="w-[1px] h-4 bg-gray-200 mx-1"></div>
-          
+
           <button onClick={toggleFullScreen} className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0" title="全屏">
             <Maximize size={20} />
           </button>
@@ -786,207 +827,238 @@ const handleImport = async (e) => {
 }
 
 function MistakeSystem({ subjectId, view, setView }) {
+  const [, setRevision] = useState(0);
+  useEffect(() => {
+    const update = event => {
+      const relevant = event.type === 'storage'
+        ? [`mathNotebook.selectedReviewRound.${subjectId}`, getMistakeListReverseKey(subjectId)].includes(event.key)
+        : String(event.detail?.subjectId) === String(subjectId);
+      if (relevant) {
+        setView('list');
+        setRevision(value => value + 1);
+      }
+    };
+    window.addEventListener(LIST_CONTEXT_EVENT, update);
+    window.addEventListener('storage', update);
+    return () => {
+      window.removeEventListener(LIST_CONTEXT_EVENT, update);
+      window.removeEventListener('storage', update);
+    };
+  }, [subjectId, setView]);
+  if (!subjectId) return <div className="p-10 text-center text-gray-400">正在加载科目...</div>;
+  const roundNo = getSelectedReviewRound(subjectId);
+  return <MistakeWorkspace key={`${subjectId}:${roundNo}`} subjectId={subjectId} roundNo={roundNo} reversed={isMistakeListReversed(subjectId)} view={view} setView={setView}/>;
+}
+
+function MistakeWorkspace({ subjectId, roundNo, reversed, view, setView }) {
+  const [saved] = useState(() => readMistakeListState(subjectId, roundNo));
   const [currentMistakeId, setCurrentMistakeId] = useState(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [visibleLimit, setVisibleLimit] = useState(MISTAKE_PAGE_SIZE);
+  const [searchQuery, setSearchQuery] = useState(saved.keyword);
+  const [visibleLimit, setVisibleLimit] = useState(saved.visibleLimit);
   const [highlightedMistakeId, setHighlightedMistakeId] = useState(null);
-
+  const [navigating, setNavigating] = useState(false);
   const scrollerRef = useRef(null);
-  const listScrollTopRef = useRef(0);
-  useEffect(() => {
-  setView('list');
-  setCurrentMistakeId(null);
-  setSearchQuery('');
-  setVisibleLimit(MISTAKE_PAGE_SIZE);
-  setHighlightedMistakeId(null);
-  listScrollTopRef.current = 0;
+  const snapshotRef = useRef(saved);
+  const persistenceEnabled = useRef(true);
+  const restorePending = useRef(true);
+  const focusOnReturn = useRef(false);
+  const lastViewRef = useRef(null);
+  const lastOrderRef = useRef(reversed);
+  const writeTimerRef = useRef(null);
+  const lastPageRef = useRef(null);
+  const latestRef = useRef(null);
+  const navigationLock = useRef(false);
+  const progressRequestRef = useRef(0);
 
-  if (scrollerRef.current) {
-    scrollerRef.current.scrollTop = 0;
-  }
-}, [subjectId, setView]);
-
-  // 切换科目或搜索词时，重置为首屏 20 条。
-  useEffect(() => {
-    setVisibleLimit(MISTAKE_PAGE_SIZE);
-  }, [subjectId, searchQuery]);
-
-  // 核心：列表只读轻量 mistakeCards，不读带 base64 图片的 mistakes。
-  // 搜索也是搜 mistakeCards 全库索引，不会只搜当前 20 条。
-  const mistakeCards = useLiveQuery(() => {
-    if (!subjectId) return [];
-    return queryMistakeCards(db, {
-      subjectId,
-      keyword: searchQuery,
-      offset: 0,
-      limit: visibleLimit
+  const queryKey = JSON.stringify([roundNo, reversed, searchQuery, visibleLimit]);
+  const page = useLiveQuery(async () => {
+    // 多读一条判断是否还有下一页，避免刚好 20/40 条时出现不存在的“下一题”。
+    const cards = await queryMistakeCards(db, {
+      subjectId, roundNo, reversed, keyword: searchQuery, offset: 0, limit: visibleLimit + 1,
     });
-  }, [subjectId, searchQuery, visibleLimit]);
-
+    return { key: queryKey, cards: cards.slice(0, visibleLimit), hasMore: cards.length > visibleLimit };
+  }, [subjectId, roundNo, reversed, searchQuery, visibleLimit]);
+  const listReady = page?.key === queryKey;
+  if (listReady) lastPageRef.current = page;
+  const displayPage = lastPageRef.current;
+  const list = displayPage?.cards || [];
+  const hasMore = Boolean(displayPage?.hasMore);
   const currentMistake = useLiveQuery(
     () => currentMistakeId ? db.mistakes.get(currentMistakeId) : null,
     [currentMistakeId]
   );
+  latestRef.current = { view, currentMistakeId, listReady };
+  snapshotRef.current = { ...snapshotRef.current, keyword: searchQuery, visibleLimit };
 
-  const list = mistakeCards || [];
-  const selectedReviewRound = getSelectedReviewRound(subjectId);
-  const hasMore = list.length >= visibleLimit;
+  const persistSnapshot = useCallback(() => {
+    if (persistenceEnabled.current) writeMistakeListState(subjectId, roundNo, snapshotRef.current);
+  }, [subjectId, roundNo]);
+  const captureListPosition = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || latestRef.current?.view !== 'list' || restorePending.current || !latestRef.current?.listReady) return;
+    const top = scroller.getBoundingClientRect().top;
+    const anchor = Array.from(scroller.querySelectorAll('[id^="mistake-card-"]'))
+      .find(card => card.getBoundingClientRect().bottom > top);
+    snapshotRef.current = {
+      ...snapshotRef.current,
+      scrollTop: scroller.scrollTop,
+      anchorId: anchor?.id.replace('mistake-card-', '') || null,
+      anchorOffset: anchor ? anchor.getBoundingClientRect().top - top : 0,
+    };
+  }, []);
+  const saveListPosition = useCallback(() => {
+    captureListPosition();
+    persistSnapshot();
+  }, [captureListPosition, persistSnapshot]);
+  const handleScroll = () => {
+    captureListPosition();
+    clearTimeout(writeTimerRef.current);
+    writeTimerRef.current = setTimeout(persistSnapshot, 120);
+  };
   useEffect(() => {
-  if (view !== 'list' || !currentMistakeId) return;
+    const reset = () => { persistenceEnabled.current = false; };
+    window.addEventListener('math-notebook-reset-navigation', reset);
+    window.addEventListener('pagehide', saveListPosition);
+    return () => {
+      window.removeEventListener('math-notebook-reset-navigation', reset);
+      window.removeEventListener('pagehide', saveListPosition);
+      clearTimeout(writeTimerRef.current);
+      progressRequestRef.current += 1;
+      persistSnapshot();
+    };
+  }, [saveListPosition, persistSnapshot]);
 
-  setHighlightedMistakeId(currentMistakeId);
+  useLayoutEffect(() => {
+    const enteringList = view === 'list' && lastViewRef.current !== 'list';
+    if (enteringList) focusOnReturn.current = lastViewRef.current === 'detail';
+    const orderChanged = lastOrderRef.current !== reversed;
+    if (enteringList || orderChanged) restorePending.current = true;
+    if (orderChanged) {
+      focusOnReturn.current = false;
+      snapshotRef.current = { ...snapshotRef.current, scrollTop: 0, anchorId: null, anchorOffset: 0 };
+      persistSnapshot();
+    }
+    lastOrderRef.current = reversed;
+    lastViewRef.current = view;
+    if (view !== 'list' || !listReady || !restorePending.current) return;
 
-  const rafId = requestAnimationFrame(() => {
-    if (scrollerRef.current) {
-      scrollerRef.current.scrollTo({
-        top: listScrollTopRef.current,
-        behavior: 'auto'
+    const scroller = scrollerRef.current;
+    scroller.scrollTop = snapshotRef.current.scrollTop;
+    const anchor = snapshotRef.current.anchorId && document.getElementById(`mistake-card-${snapshotRef.current.anchorId}`);
+    if (anchor && scroller.contains(anchor)) {
+      scroller.scrollTop += anchor.getBoundingClientRect().top - scroller.getBoundingClientRect().top - snapshotRef.current.anchorOffset;
+    }
+    // 只在“返回列表”时定位当前题，加载更多和索引刷新绝不触发重新滚动。
+    if (currentMistakeId && focusOnReturn.current) {
+      document.getElementById(`mistake-card-${currentMistakeId}`)?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+      setHighlightedMistakeId(currentMistakeId);
+    }
+    restorePending.current = false;
+    focusOnReturn.current = false;
+    saveListPosition();
+  }, [view, listReady, page, currentMistakeId, reversed, persistSnapshot, saveListPosition]);
+
+  useLayoutEffect(() => {
+    if (view !== 'list') scrollerRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+  }, [view, currentMistakeId]);
+  useEffect(() => {
+    if (!highlightedMistakeId || view !== 'list') return;
+    const timer = setTimeout(() => setHighlightedMistakeId(null), 2500);
+    return () => clearTimeout(timer);
+  }, [view, highlightedMistakeId]);
+
+  const openProgress = useCallback(async () => {
+    let pending;
+    try { pending = JSON.parse(localStorage.getItem('mathNotebook.pendingOpenMistake') || 'null'); } catch { return; }
+    if (!pending || String(pending.subjectId) !== String(subjectId) || Number(pending.roundNo) !== roundNo) return;
+    const request = ++progressRequestRef.current;
+    const cards = await queryMistakeCards(db, { subjectId, roundNo, reversed, limit: Number.MAX_SAFE_INTEGER });
+    if (request !== progressRequestRef.current) return;
+    const index = cards.findIndex(card => String(card.id) === String(pending.mistakeId));
+    localStorage.removeItem('mathNotebook.pendingOpenMistake');
+    if (index < 0) return;
+    saveListPosition();
+    setSearchQuery('');
+    setVisibleLimit(limit => Math.max(limit, Math.ceil((index + 1) / MISTAKE_PAGE_SIZE) * MISTAKE_PAGE_SIZE));
+    setCurrentMistakeId(cards[index].id);
+    setView('detail');
+  }, [subjectId, roundNo, reversed, saveListPosition, setView]);
+  useEffect(() => {
+    const open = () => { openProgress().catch(error => console.error(error)); };
+    window.addEventListener('math-notebook-open-progress', open);
+    open();
+    return () => window.removeEventListener('math-notebook-open-progress', open);
+  }, [openProgress]);
+
+  const loadMore = useCallback(() => {
+    if (hasMore && listReady && !restorePending.current) setVisibleLimit(limit => limit + MISTAKE_PAGE_SIZE);
+  }, [hasMore, listReady]);
+  const handleNextMistake = async () => {
+    if (!currentMistakeId || !listReady || navigationLock.current) return;
+    const index = list.findIndex(item => item.id === currentMistakeId);
+    if (index < 0) return;
+    if (index + 1 < list.length) {
+      setCurrentMistakeId(list[index + 1].id);
+      return;
+    }
+    if (!hasMore) return;
+    navigationLock.current = true;
+    setNavigating(true);
+    try {
+      const next = await queryMistakeCards(db, {
+        subjectId, roundNo, reversed, keyword: searchQuery, offset: index + 1, limit: 1,
       });
-    }
-
-    const target = document.getElementById(`mistake-card-${currentMistakeId}`);
-    target?.scrollIntoView({
-      block: 'nearest',
-      behavior: 'smooth'
-    });
-  });
-
-  const timer = setTimeout(() => {
-    setHighlightedMistakeId(null);
-  }, 2500);
-
-  return () => {
-    cancelAnimationFrame(rafId);
-    clearTimeout(timer);
-  };
-}, [view, currentMistakeId, list.length]);
-
-  const loadMore = () => {
-    if (hasMore) {
-      setVisibleLimit(prev => prev + MISTAKE_PAGE_SIZE);
+      if (latestRef.current?.view !== 'detail' || latestRef.current?.currentMistakeId !== currentMistakeId) return;
+      setVisibleLimit(limit => limit + MISTAKE_PAGE_SIZE);
+      if (next[0]) setCurrentMistakeId(next[0].id);
+    } catch (error) {
+      console.error(error);
+      alert('加载下一题失败，请重试');
+    } finally {
+      navigationLock.current = false;
+      setNavigating(false);
     }
   };
-
-  const handleNextMistake = () => {
-    if (!currentMistakeId) return;
-
-    const currentIndex = list.findIndex(m => m.id === currentMistakeId);
-
-    if (currentIndex !== -1 && currentIndex < list.length - 1) {
-      setCurrentMistakeId(list[currentIndex + 1].id);
-      return;
-    }
-
-    if (hasMore) {
-      setVisibleLimit(prev => prev + MISTAKE_PAGE_SIZE);
-      alert('已加载更多错题，请再点一次下一题。');
-      return;
-    }
-
-    alert('已经是最后一题了');
-  };
-
   const handlePrevMistake = () => {
-    if (!currentMistakeId) return;
-
-    const currentIndex = list.findIndex(m => m.id === currentMistakeId);
-
-    if (currentIndex > 0) {
-      setCurrentMistakeId(list[currentIndex - 1].id);
-    } else {
-      alert('已经是第一题了');
-    }
+    if (!listReady || navigationLock.current) return;
+    const index = list.findIndex(item => item.id === currentMistakeId);
+    if (index > 0) setCurrentMistakeId(list[index - 1].id);
   };
-
-  const hasNext = useMemo(() => {
-    if (!currentMistakeId) return false;
-    const currentIndex = list.findIndex(m => m.id === currentMistakeId);
-    return currentIndex !== -1 && (currentIndex < list.length - 1 || hasMore);
-  }, [list, currentMistakeId, hasMore]);
-
-  const hasPrev = useMemo(() => {
-    if (!currentMistakeId) return false;
-    const currentIndex = list.findIndex(m => m.id === currentMistakeId);
-    return currentIndex > 0;
-  }, [list, currentMistakeId]);
-
-  if (!subjectId) {
-    return <div className="p-10 text-center text-gray-400">正在加载科目...</div>;
-  }
+  const currentIndex = list.findIndex(item => item.id === currentMistakeId);
 
   return (
-    <div
-  ref={scrollerRef}
-  className="w-full max-w-6xl mx-auto h-full overflow-y-auto px-3 sm:px-5 lg:px-8 py-4 pb-28"
->
-      {view === 'list' && (
-        <>
-          <div className="mb-4 relative">
-            <Search size={18} className="absolute left-3 top-3.5 text-gray-400" />
-            <input
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              placeholder="搜索错题标题、复盘、解析、日期..."
-              className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm transition"
-            />
-          </div>
-
-         <MistakeList
-  mistakes={mistakeCards}
-  highlightedId={highlightedMistakeId}
-  onAdd={() => setView('add')}
-  onOpen={(id) => {
-    listScrollTopRef.current = scrollerRef.current?.scrollTop || 0;
-    setHighlightedMistakeId(id);
-    setCurrentMistakeId(id);
-    setView('detail');
-  }}
-  onLoadMore={loadMore}
-  hasMore={hasMore}
-/>
-
-          <div className="text-center text-[10px] text-gray-300 mt-4">
-            Build: {APP_VERSION}
-          </div>
-        </>
-      )}
-
-      {view === 'add' && (
-        <MistakeForm
-          mode="add"
-          subjectId={subjectId}
-          onFinish={() => setView('list')}
-          onCancel={() => setView('list')}
-        />
-      )}
-
-      {view === 'detail' && currentMistake && (
-        <MistakeDetail
-          mistake={currentMistake}
-          reviewRoundNo={selectedReviewRound}
-          onRemoveFromRound={() => {
-            setCurrentMistakeId(null);
-            setHighlightedMistakeId(null);
-            setView('list');
-          }}
-          onEdit={() => setView('edit')}
-          onNext={handleNextMistake}
-          hasNext={hasNext}
-          onPrev={handlePrevMistake}
-          hasPrev={hasPrev}
-          onBack={() => setView('list')}
-        />
-      )}
-
-      {view === 'edit' && currentMistake && (
-        <MistakeForm
-          mode="edit"
-          initialData={currentMistake}
-          subjectId={subjectId}
-          onFinish={() => setView('detail')}
-          onCancel={() => setView('detail')}
-        />
-      )}
+    <div ref={scrollerRef} data-mistake-list-owner="react" onScroll={handleScroll} className="w-full max-w-6xl mx-auto h-full overflow-y-auto px-3 sm:px-5 lg:px-8 py-4 pb-28">
+      {view === 'list' && <>
+        <div className="mb-4 relative">
+          <Search size={18} className="absolute left-3 top-3.5 text-gray-400"/>
+          <input value={searchQuery} onChange={event => {
+            progressRequestRef.current += 1;
+            restorePending.current = true;
+            snapshotRef.current = { ...snapshotRef.current, scrollTop: 0, anchorId: null, anchorOffset: 0 };
+            setSearchQuery(event.target.value);
+            setVisibleLimit(MISTAKE_PAGE_SIZE);
+          }} placeholder="搜索错题标题、复盘、解析、日期..." className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm transition"/>
+        </div>
+        <div id="mn-global-list-reverse-toggle" data-native-sort="true" className="flex justify-end mb-3">
+          <button type="button" data-role="reverse-toggle" onClick={() => {
+            saveListPosition();
+            localStorage.setItem(getMistakeListReverseKey(subjectId), reversed ? '0' : '1');
+            notifyListContextChanged(subjectId);
+          }} className="rounded-full border border-indigo-200 bg-indigo-50 text-indigo-700 px-3 py-2 text-xs font-bold">{reversed ? '还原顺序' : '倒序显示'}</button>
+        </div>
+        <MistakeList mistakes={displayPage?.cards} highlightedId={highlightedMistakeId} scrollRoot={scrollerRef} onAdd={() => { saveListPosition(); setCurrentMistakeId(null); setView('add'); }} onOpen={id => {
+          if (!listReady) return;
+          progressRequestRef.current += 1;
+          saveListPosition();
+          setHighlightedMistakeId(id);
+          setCurrentMistakeId(id);
+          setView('detail');
+        }} onLoadMore={loadMore} hasMore={hasMore}/>
+        <div className="text-center text-[10px] text-gray-300 mt-4">Build: {APP_VERSION}</div>
+      </>}
+      {view === 'add' && <MistakeForm mode="add" subjectId={subjectId} onFinish={() => setView('list')} onCancel={() => setView('list')}/>}
+      {view === 'detail' && (currentMistake?.id === currentMistakeId ? <MistakeDetail key={currentMistake.id} mistake={currentMistake} reviewRoundNo={roundNo} onRemoveFromRound={() => { setCurrentMistakeId(null); setView('list'); }} onEdit={() => setView('edit')} onNext={handleNextMistake} hasNext={!navigating && currentIndex >= 0 && (currentIndex < list.length - 1 || hasMore)} onPrev={handlePrevMistake} hasPrev={!navigating && currentIndex > 0} onBack={() => setView('list')}/> : <div className="p-10 text-center text-gray-400">正在加载题目...</div>)}
+      {view === 'edit' && currentMistake?.id === currentMistakeId && <MistakeForm mode="edit" initialData={currentMistake} subjectId={subjectId} onFinish={() => setView('detail')} onCancel={() => setView('detail')}/>}
     </div>
   );
 }
@@ -1048,7 +1120,7 @@ function NoteSystem() {
   };
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }), useSensor(KeyboardSensor));
-  
+
   const isDescendant = (sourceId, targetId) => {
     if (sourceId === targetId) return true;
     let current = allNotes.find(n => n.id === targetId);
@@ -1122,7 +1194,7 @@ function NoteSystem() {
 
       <div className="flex-1 h-full overflow-hidden flex flex-col relative bg-white">
         {!mobileMenuOpen && (<button onClick={() => setMobileMenuOpen(true)} className="absolute top-4 left-4 z-10 p-2 bg-white shadow-md border rounded-full md:hidden"><ChevronRightIcon size={20} /></button>)}
-        
+
         {selectedNode ? (
           selectedNode.type === 'folder' ? (
             <FolderView 
@@ -1213,7 +1285,7 @@ function MoveModal({ node, allNotes, onClose, onConfirm }) {
     const isDescendant = (sourceId, targetNode) => {
       let curr = targetNode;
       let safeGuard = 0; // [关键] 安全计数器，防止死循环
-      
+
       // 如果向上查找超过 500 层，或者找不到父级，或者到了根目录，就停止
       while(curr && curr.parentId !== 'root' && safeGuard < 500) {
           if(curr.parentId === sourceId) return true;
@@ -1237,7 +1309,7 @@ function MoveModal({ node, allNotes, onClose, onConfirm }) {
       // 为了性能，只查找当前层级的子文件夹
       const children = validTargets.filter(n => n.parentId === parentId);
       if (children.length === 0) return null;
-      
+
       return children.map(folder => (
           <React.Fragment key={folder.id}>
               <div 
@@ -1261,7 +1333,7 @@ function MoveModal({ node, allNotes, onClose, onConfirm }) {
                 <h3 className="font-bold text-gray-800 truncate pr-4">将 "{node.title}" 移动到...</h3>
                 <button onClick={onClose} className="p-1 hover:bg-gray-200 rounded-full text-gray-500 transition"><X size={20}/></button>
             </div>
-            
+
             <div className="flex-1 overflow-y-auto">
                 {/* 根目录选项 */}
                 {node.parentId !== 'root' && (
@@ -1270,10 +1342,10 @@ function MoveModal({ node, allNotes, onClose, onConfirm }) {
                         根目录 (Root)
                     </div>
                 )}
-                
+
                 {/* 文件夹树 */}
                 {renderOptions('root', 0)}
-                
+
                 {validTargets.length === 0 && node.parentId === 'root' && (
                     <div className="p-8 text-center text-gray-400 text-xs flex flex-col items-center">
                         <Folder size={32} className="mb-2 opacity-20"/>
@@ -1291,7 +1363,7 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState(folder.title);
   const [renamingId, setRenamingId] = useState(null);
-  
+
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [contextMenu, setContextMenu] = useState(null);
@@ -1332,7 +1404,7 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
   // --- 空白区域长按逻辑 (粘贴菜单) ---
   const handleBgPointerDown = (e) => {
     if (e.target.dataset.type !== 'folder-bg') return; // 确保点在背景上
-    
+
     // 清除旧定时器
     if (bgLongPressTimer.current) clearTimeout(bgLongPressTimer.current);
 
@@ -1491,7 +1563,7 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
   // [新增] 文本编辑相关状态
   const [text, setText] = useState('');
   const [isPreview, setIsPreview] = useState(true); // 默认开启预览模式，方便查看
-  
+
   const siblings = useLiveQuery(async () => {
     if (!note) return [];
     const items = await db.notes.where('parentId').equals(note.parentId).toArray();
@@ -1512,7 +1584,7 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
         // 只有当 text 有值且当前不在编辑状态时才更新，防止打字时光标跳动
         // 这里简单处理：切换笔记时更新 text
         setText(note.text || '');
-        
+
         // 如果没有内容，默认进入编辑模式；有内容则默认预览
         if (note.text === undefined || note.text === '') {
             setIsPreview(false);
@@ -1523,7 +1595,7 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
   if (!note) return <div className="p-10 text-center">加载中...</div>;
 
   const handleUpdate = (updates) => db.notes.update(nodeId, updates);
-  
+
   // [新增] 保存文本内容
   const handleTextSave = () => {
     handleUpdate({ text });
@@ -1543,7 +1615,7 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
            <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500" title="返回上一级">
              <ArrowUpLeft size={20}/>
            </button>
-           
+
            <div className="flex-1">
              {editingTitle ? (
                <input autoFocus value={title} onChange={e => setTitle(e.target.value)} onBlur={() => { setEditingTitle(false); handleUpdate({ title }); }} onKeyDown={e => { if(e.key === 'Enter') { setEditingTitle(false); handleUpdate({ title }); } }} className="text-xl font-bold w-full border-b border-blue-500 outline-none"/>
@@ -1553,7 +1625,7 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
              <div className="text-xs text-gray-400 mt-1 ml-1 flex items-center gap-2">{new Date(note.createdAt).toLocaleDateString()}</div>
            </div>
         </div>
-        
+
         <div className="flex items-center gap-1 mr-2 bg-gray-100 p-1 rounded-lg">
             <button onClick={() => onNavigate(prevId)} disabled={!prevId} className="p-1.5 hover:bg-white hover:shadow-sm rounded-md disabled:opacity-30 transition-all text-gray-600"><ChevronLeft size={18}/></button>
             <div className="w-[1px] h-4 bg-gray-300"></div>
@@ -1561,7 +1633,7 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
         </div>
         <button onClick={handleDeleteNote} className="text-red-400 hover:bg-red-50 p-2 rounded-full"><Trash2 size={20}/></button>
       </div>
-      
+
       {/* 标签栏 */}
       {note.type === 'file' && (
         <div className="px-6 py-2 flex flex-wrap items-center gap-2 border-b border-gray-50">
@@ -1570,7 +1642,7 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
             <div className="flex items-center gap-1 bg-gray-50 rounded-full px-2 py-1"><input value={newTag} onChange={e => setNewTag(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddTag()} placeholder="添加标签..." className="bg-transparent text-xs w-20 outline-none"/><Plus size={12} className="cursor-pointer text-gray-400" onClick={handleAddTag}/></div>
         </div>
       )}
-      
+
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
          {/* [新增] Markdown 文本编辑/预览区域 */}
          <div className="space-y-2">
@@ -1608,7 +1680,7 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
 
          {/* 原有的图片列表 (保留作为补充资料/截图区域) */}
          {note.content?.length > 0 && <div className="border-t border-gray-100 my-4"></div>}
-         
+
          {note.content?.map((item, idx) => (
             <div key={item.id} className="group relative bg-gray-50 rounded-xl p-2 border border-gray-100">
                 <img src={item.src} className="w-full rounded-lg" />
@@ -1616,7 +1688,7 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
                 <textarea placeholder="给这张图写点备注..." className="w-full bg-transparent text-sm mt-2 p-2 outline-none resize-none h-10 focus:bg-white focus:h-20 transition-all rounded" defaultValue={item.desc} onBlur={(e) => { const newContent = [...note.content]; newContent[idx].desc = e.target.value; handleUpdate({ content: newContent }); }}/>
             </div>
          ))}
-         
+
          <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 flex flex-col items-center justify-center text-gray-400 hover:bg-gray-50 hover:border-indigo-200 transition cursor-pointer relative">
             <ImageIcon size={32} className="mb-2"/>
             <span className="text-sm font-bold">添加补充截图</span>
@@ -1663,7 +1735,7 @@ function MistakeThumb({ mistakeId, imageCount }) {
   );
 }
 
-function MistakeList({ mistakes, highlightedId, onAdd, onOpen, onLoadMore, hasMore }) {
+function MistakeList({ mistakes, highlightedId, scrollRoot, onAdd, onOpen, onLoadMore, hasMore }) {
   const loaderRef = useRef(null);
 
   useEffect(() => {
@@ -1675,7 +1747,7 @@ function MistakeList({ mistakes, highlightedId, onAdd, onOpen, onLoadMore, hasMo
           onLoadMore?.();
         }
       },
-      { rootMargin: '360px' }
+      { root: scrollRoot.current, rootMargin: '360px' }
     );
 
     observer.observe(loaderRef.current);
@@ -1806,11 +1878,11 @@ function MistakeForm({ mode, initialData, onFinish, onCancel, subjectId }) {
   const isEdit = mode === 'edit';
   const [title, setTitle] = useState(initialData?.title || '');
   const [questionMarkdown, setQuestionMarkdown] = useState(initialData?.questionMarkdown || '');
-  
+
   const [qImages, setQImages] = useState(
     initialData?.questionImages || (initialData?.questionImg ? [initialData.questionImg] : [])
   );
-  
+
 const [aImages, setAImages] = useState(
     initialData?.analysisImages || (initialData?.analysisImg ? [initialData.analysisImg] : [])
   );  const [reflection, setReflection] = useState(initialData?.reflection || '');
@@ -1925,7 +1997,7 @@ const [aImages, setAImages] = useState(
             <label className="block text-sm font-bold text-gray-700 mb-2">标题 / 备注</label>
             <input type="text" value={title} onChange={e => setTitle(e.target.value)} placeholder="例如：极限计算" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:border-blue-500 transition" />
         </div>
-        
+
         <div className="border-t border-dashed pt-4">
           <div className="flex justify-between items-center mb-2 gap-3">
             <label className="block text-sm font-bold text-gray-700">2. 我的复盘（Markdown）</label>
@@ -1947,7 +2019,7 @@ const [aImages, setAImages] = useState(
             />
           )}
         </div>
-        
+
         <div className="border-t border-dashed pt-4">
           <div className="flex justify-between items-center mb-2">
              <label className="block text-sm font-bold text-gray-700">3. 答案解析 (支持 LaTeX)</label>
@@ -1956,9 +2028,9 @@ const [aImages, setAImages] = useState(
                 <button onClick={() => setIsPreviewMode(true)} className={cn("px-3 py-1 rounded-md transition-all", isPreviewMode ? "bg-white shadow text-blue-600" : "text-gray-500")}>预览</button>
              </div>
           </div>
-          
+
 <MultiImageUpload images={aImages} onChange={setAImages} />
-          
+
           {isPreviewMode ? (
             <div className="w-full mt-3 p-4 bg-gray-50 border border-gray-200 rounded-xl min-h-[160px] prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2">
                {analysisText ? (
@@ -2420,7 +2492,7 @@ function MultiImageUpload({ images = [], onChange, max = 9 }) {
   const handleFile = async (e) => {
     const files = Array.from(e.target.files);
     if (!files.length) return;
-    
+
     // 限制数量
     if (images.length + files.length > max) {
       alert(`最多只能上传 ${max} 张图片`);
@@ -2454,7 +2526,7 @@ function MultiImageUpload({ images = [], onChange, max = 9 }) {
           </div>
         </div>
       ))}
-      
+
       {images.length < max && (
         <div className="relative aspect-square border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center text-gray-400 hover:bg-gray-50 hover:border-blue-300 transition cursor-pointer">
           <Plus size={24} />
@@ -2475,7 +2547,7 @@ function MultiImageUpload({ images = [], onChange, max = 9 }) {
 // --- [修复版] 可拖拽项：分离拖拽与菜单逻辑 ---
 function SortableGridItem({ item, isSelectionMode, isSelected, onClick, onMenuClick, onContextMenu, children }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
-  
+
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,

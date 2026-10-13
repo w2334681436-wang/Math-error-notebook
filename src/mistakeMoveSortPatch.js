@@ -6,6 +6,7 @@
 
 import { db } from './db';
 import { buildMistakeCard, getMistakeListReverseKey, isMistakeListReversed } from './searchIndex';
+import { notifyListContextChanged } from './mistakeListState';
 
 const PATCHED = 'data-mn-move-sort-patched';
 const CARD_PATCHED = 'data-mn-move-button-patched';
@@ -82,6 +83,8 @@ async function findActiveSubject() {
       return text && className.includes('bg-blue-600') && subjects.some(subject => subject.name === text);
     });
 
+  const selectedId = selectedButton?.dataset.subjectId;
+  if (selectedId) return subjects.find(subject => String(subject.id) === selectedId) || null;
   const selectedName = selectedButton?.textContent?.trim();
   return subjects.find(subject => subject.name === selectedName) || subjects[0];
 }
@@ -288,20 +291,6 @@ function patchMistakeCards() {
   });
 }
 
-async function bumpSubjectCards(subjectId) {
-  if (!subjectId) return;
-  const count = await db.mistakeCards.where('subjectId').equals(subjectId).count();
-  if (count === 0) return;
-
-  const sortTick = Date.now();
-  await db.mistakeCards
-    .where('subjectId')
-    .equals(subjectId)
-    .modify(card => {
-      card._sortTick = sortTick;
-    });
-}
-
 async function patchSortButton() {
   const searchInput = Array.from(document.querySelectorAll('input'))
     .find(input => input.placeholder?.includes('搜索错题'));
@@ -344,8 +333,8 @@ async function patchSortButton() {
     const key = getMistakeListReverseKey(subject.id);
     const nextReversed = !isMistakeListReversed(subject.id);
     localStorage.setItem(key, nextReversed ? '1' : '0');
+    notifyListContextChanged(subject.id);
     await updateSortButtonLabel();
-    await bumpSubjectCards(subject.id);
     showToast(nextReversed ? '已切换为倒序显示' : '已还原默认顺序');
   });
 
@@ -356,6 +345,7 @@ async function patchSortButton() {
 
 async function updateSortButtonLabel() {
   const wrapper = document.getElementById(SORT_BUTTON_ID);
+  if (wrapper?.dataset.nativeSort === 'true') return;
   const button = wrapper?.querySelector('button[data-role="reverse-toggle"]');
   if (!button) return;
 

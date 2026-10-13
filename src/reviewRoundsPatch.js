@@ -7,7 +7,7 @@
 // 5. 防止热更新/重复挂载/DOM 重绘导致“加入下一轮/已掌握”按钮重复出现。
 import { db } from './db';
 import { refreshMistakeCard } from './searchIndex';
-import { getExcludedMistakeIds, isMistakeInReviewRound } from './reviewRoundActions';
+import { getExcludedMistakeIds, isMistakeInReviewRound, setSelectedReviewRound } from './reviewRoundActions';
 
 const SELECTED_ROUND_PREFIX = 'mathNotebook.selectedReviewRound.';
 const LAST_PROGRESS_PREFIX = 'mathNotebook.lastReviewProgress.';
@@ -58,7 +58,7 @@ function getSelectedRound(subjectId) {
 }
 
 function setSelectedRound(subjectId, roundNo) {
-  localStorage.setItem(`${SELECTED_ROUND_PREFIX}${subjectId}`, String(Math.max(1, Math.floor(roundNo))));
+  setSelectedReviewRound(subjectId, roundNo);
 }
 
 function lastProgressKey(subjectId, roundNo) {
@@ -70,6 +70,8 @@ function getRoundName(roundNo) {
 }
 
 function isMistakeListPageVisible() {
+  const workspace = document.querySelector('[data-mistake-list-owner="react"]');
+  if (workspace) return Boolean(workspace.querySelector('input[placeholder*="搜索错题"]'));
   return Boolean(
     document.querySelector('input[placeholder*="搜索错题"]') ||
     Array.from(document.querySelectorAll('button')).some(btn => isElementVisible(btn) && buttonText(btn) === '错题本')
@@ -77,11 +79,15 @@ function isMistakeListPageVisible() {
 }
 
 function isDetailPageVisible() {
+  const workspace = document.querySelector('[data-mistake-list-owner="react"]');
+  if (workspace) return Boolean(workspace.querySelector('[data-review-toolbar="fixed"]'));
   const bodyText = document.body?.innerText || '';
   return bodyText.includes('题目详情') || bodyText.includes('查看解析') || bodyText.includes('遮住答案') || bodyText.includes('我的复盘') || bodyText.includes('标准解析');
 }
 
 function isAnalysisOpen() {
+  const toolbar = document.querySelector('[data-review-toolbar="fixed"]');
+  if (toolbar) return buttonText(toolbar.querySelector('.math-toolbar-analysis')) === '遮住答案';
   const bodyText = document.body?.innerText || '';
   const hasHideAnswerButton = Array.from(document.querySelectorAll('button')).some(btn => isElementVisible(btn) && buttonText(btn).includes('遮住答案'));
   return hasHideAnswerButton || (bodyText.includes('我的复盘') && bodyText.includes('标准解析'));
@@ -101,7 +107,9 @@ function findVisibleSubjectButtons(subjects) {
     .filter(button => !isInsideReviewPatchUi(button));
   return subjects
     .map(subject => {
-      const candidates = buttons.filter(button => buttonText(button) === subject.name);
+      const candidates = buttons.filter(button => button.dataset.subjectId
+        ? button.dataset.subjectId === String(subject.id)
+        : buttonText(button) === subject.name);
       const active = candidates.find(button => {
         const cls = String(button.className || '');
         const aria = button.getAttribute('aria-selected');
@@ -321,9 +329,9 @@ function renderRoundMenu(root, subject, roundCount, selectedRound, counts) {
     button.addEventListener('click', () => {
       const nextRound = Number(button.getAttribute('data-review-round'));
       roundMenuOpen = false;
-      setSelectedRound(subject.id, nextRound);
       localStorage.removeItem(PENDING_OPEN_KEY);
-      window.location.reload();
+      setSelectedRound(subject.id, nextRound);
+      scheduleRender();
     });
   });
 }
@@ -411,7 +419,7 @@ async function renderRoundDirectory() {
         mistakeId: lastProgress.mistakeId,
         createdAt: Date.now()
       }));
-      window.location.reload();
+      window.dispatchEvent(new CustomEvent('math-notebook-open-progress', { detail: { subjectId: subject.id } }));
     });
   }
 
@@ -466,7 +474,7 @@ export async function toggleNextRound(mistake, currentRound) {
 
   const nextRound = currentRound + 1;
 
-  const added = await db.transaction('rw', db.reviewRoundItems, db.mistakes, async () => {
+  const added = await db.transaction('rw', db.reviewRoundItems, db.mistakes, db.mistakeCards, async () => {
     const items = db.reviewRoundItems
       .where('[subjectId+roundNo+mistakeId]')
       .equals([mistake.subjectId, nextRound, mistake.id]);
@@ -484,9 +492,9 @@ export async function toggleNextRound(mistake, currentRound) {
       title: mistake.title || '未命名错题'
     });
     await db.mistakes.update(mistake.id, { isMastered: false, updatedAt: new Date() });
+    await refreshMistakeCard(db, mistake.id);
     return true;
   });
-  await refreshMistakeCard(db, mistake.id);
   if (added) await markProgress(mistake, 'nextRound', currentRound);
   else cancelProgress(mistake, 'nextRound', currentRound);
   showToast(added ? `已加入第 ${nextRound} 轮刷题` : `已取消加入第 ${nextRound} 轮`);
@@ -494,14 +502,14 @@ export async function toggleNextRound(mistake, currentRound) {
 }
 
 export async function toggleMastered(mistake, currentRound) {
-  const isMastered = await db.transaction('rw', db.mistakes, async () => {
+  const isMastered = await db.transaction('rw', db.mistakes, db.mistakeCards, async () => {
     const current = await db.mistakes.get(mistake.id);
     if (!current) throw new Error('题目不存在');
     const next = !current.isMastered;
     await db.mistakes.update(mistake.id, { isMastered: next, updatedAt: new Date() });
+    await refreshMistakeCard(db, mistake.id);
     return next;
   });
-  await refreshMistakeCard(db, mistake.id);
   if (isMastered) await markProgress(mistake, 'mastered', currentRound);
   else cancelProgress(mistake, 'mastered', currentRound);
   showToast(isMastered ? '已记录：这题已掌握' : '已取消掌握标记');
@@ -675,6 +683,7 @@ async function renderDecisionBar() {
 }
 
 function tryOpenPendingMistake() {
+  if (document.querySelector('[data-mistake-list-owner="react"]')) return;
   const raw = localStorage.getItem(PENDING_OPEN_KEY);
   if (!raw) return;
 

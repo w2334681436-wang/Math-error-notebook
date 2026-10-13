@@ -2,7 +2,6 @@
 import {
   getExcludedMistakeIds,
   getSelectedReviewRound,
-  isMistakeInReviewRound,
 } from './reviewRoundActions';
 
 export const MISTAKE_PAGE_SIZE = 20;
@@ -30,23 +29,6 @@ function getAnalysisImages(mistake) {
 }
 
 export { getSelectedReviewRound } from './reviewRoundActions';
-
-function getPendingOpenId(subjectId, roundNo) {
-  if (typeof localStorage === 'undefined') return null;
-  const raw = localStorage.getItem('mathNotebook.pendingOpenMistake');
-  if (!raw) return null;
-
-  try {
-    const data = JSON.parse(raw);
-    if (String(data.subjectId) === String(subjectId) && Number(data.roundNo) === Number(roundNo)) {
-      return data.mistakeId;
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-}
 
 export function getMistakeListReverseKey(subjectId) {
   return `${MISTAKE_SORT_STORAGE_PREFIX}${subjectId}`;
@@ -81,25 +63,11 @@ export function createSearchTokens(text) {
   return Array.from(tokens).slice(0, 160);
 }
 
-function pickBestToken(keyword) {
-  const tokens = createSearchTokens(keyword);
-  if (tokens.length === 0) return '';
-  return tokens.sort((a, b) => b.length - a.length)[0];
-}
-
 function cardMatchesKeyword(card, keyword) {
   const q = normalizeSearchText(keyword);
   if (!q) return true;
-
-  const searchText = card.searchText || '';
-  if (searchText.includes(q)) return true;
-
-  const queryTokens = createSearchTokens(q).filter(t => t.length >= 2);
-  if (queryTokens.length === 0) {
-    return createSearchTokens(q).every(t => card.tokens?.includes(t));
-  }
-
-  return queryTokens.every(t => card.tokens?.includes(t));
+  const text = card.searchText || '';
+  return text.includes(q) || q.split(/\s+/).every(term => text.includes(term));
 }
 
 // 从完整错题生成轻量卡片。
@@ -149,17 +117,17 @@ export function buildMistakeCard(mistake) {
 }
 
 export async function rebuildAllMistakeCards(db) {
-  const mistakes = await db.mistakes.toArray();
-  const cards = mistakes
-    .filter(m => m && m.id !== undefined && m.id !== null)
-    .map(buildMistakeCard);
-
-  await db.transaction('rw', db.mistakeCards, async () => {
+  return db.transaction('rw', db.mistakes, db.mistakeCards, async () => {
     await db.mistakeCards.clear();
-    if (cards.length > 0) await db.mistakeCards.bulkPut(cards);
+    let count = 0;
+    while (true) {
+      // 分批读取，避免一次性把整个错题库的所有 base64 图片装入内存。
+      const records = await db.mistakes.orderBy(':id').offset(count).limit(10).toArray();
+      if (!records.length) return count;
+      await db.mistakeCards.bulkPut(records.map(buildMistakeCard));
+      count += records.length;
+    }
   });
-
-  return cards.length;
 }
 
 export async function refreshMistakeCard(db, mistakeId) {
@@ -187,17 +155,9 @@ async function queryFirstRoundCards(db, subjectId, q, offset, limit, reversed) {
       .slice(offset, offset + limit);
   }
 
-  const anchor = pickBestToken(q);
-  let candidates = [];
-
-  if (anchor) {
-    candidates = await db.mistakeCards.where('tokens').equals(anchor).toArray();
-  } else {
-    candidates = await db.mistakeCards.where('subjectId').equals(subjectId).toArray();
-  }
-
+  // tokens 有容量上限，不能用它排除长解析末尾、英文子串等合法命中。
+  const candidates = await db.mistakeCards.where('subjectId').equals(subjectId).toArray();
   return candidates
-    .filter(card => card.subjectId === subjectId)
     .filter(card => !excludedIds.has(String(card.id)))
     .filter(card => cardMatchesKeyword(card, q))
     .sort((a, b) => {
@@ -216,7 +176,8 @@ async function queryRoundCards(db, subjectId, roundNo, q, offset, limit, reverse
 
   if (items.length === 0) return [];
 
-  const cards = (await db.mistakeCards.bulkGet(items.map(item => item.mistakeId)))
+  const ids = [...new Set(items.map(item => item.mistakeId))];
+  const cards = (await db.mistakeCards.bulkGet(ids))
     .filter(Boolean)
     .filter(card => card.subjectId === subjectId)
     .filter(card => cardMatchesKeyword(card, q));
@@ -231,55 +192,13 @@ async function queryRoundCards(db, subjectId, roundNo, q, offset, limit, reverse
   return cards.slice(offset, offset + limit);
 }
 
-function movePendingCardToTop(cards, pendingId) {
-  if (!pendingId || !Array.isArray(cards) || cards.length === 0) return cards;
-
-  const index = cards.findIndex(card => String(card.id) === String(pendingId));
-  if (index <= 0) return cards;
-
-  const copy = [...cards];
-  const [target] = copy.splice(index, 1);
-  copy.unshift(target);
-  return copy;
-}
-
-export async function queryMistakeCards(db, { subjectId, keyword = '', offset = 0, limit = MISTAKE_PAGE_SIZE }) {
+export async function queryMistakeCards(db, {
+  subjectId, keyword = '', offset = 0, limit = MISTAKE_PAGE_SIZE,
+  roundNo = getSelectedReviewRound(subjectId), reversed = isMistakeListReversed(subjectId),
+}) {
   if (!subjectId) return [];
-
   const q = normalizeSearchText(keyword);
-  const roundNo = getSelectedReviewRound(subjectId);
-  const pendingId = getPendingOpenId(subjectId, roundNo);
-  const reversed = isMistakeListReversed(subjectId);
-  let cards = [];
-
-  if (roundNo <= 1) {
-    cards = await queryFirstRoundCards(db, subjectId, q, offset, limit, reversed);
-  } else {
-    cards = await queryRoundCards(db, subjectId, roundNo, q, offset, limit, reversed);
-  }
-
-  // “上次刷到”跳转时，把目标卡片提到当前列表第一项，避免分页未加载导致找不到。
-  if (offset === 0 && pendingId) {
-    const exists = cards.some(card => String(card.id) === String(pendingId));
-    if (!exists) {
-      const pendingCard = await db.mistakeCards.get(pendingId);
-      const belongsToRound = await isMistakeInReviewRound(db, {
-        subjectId,
-        roundNo,
-        mistakeId: pendingId,
-      });
-      if (
-        belongsToRound &&
-        pendingCard &&
-        pendingCard.subjectId === subjectId &&
-        cardMatchesKeyword(pendingCard, q)
-      ) {
-        cards = [pendingCard, ...cards.filter(card => String(card.id) !== String(pendingId))].slice(0, limit);
-      }
-    } else {
-      cards = movePendingCardToTop(cards, pendingId);
-    }
-  }
-
-  return cards;
+  return roundNo <= 1
+    ? queryFirstRoundCards(db, subjectId, q, offset, limit, reversed)
+    : queryRoundCards(db, subjectId, roundNo, q, offset, limit, reversed);
 }
