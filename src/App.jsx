@@ -857,6 +857,8 @@ function MistakeWorkspace({ subjectId, roundNo, reversed, view, setView }) {
   const [visibleLimit, setVisibleLimit] = useState(saved.visibleLimit);
   const [highlightedMistakeId, setHighlightedMistakeId] = useState(null);
   const [navigating, setNavigating] = useState(false);
+  const [relatedEditorTargetId, setRelatedEditorTargetId] = useState(null);
+  const consumeRelatedEditorRequest = useCallback(() => setRelatedEditorTargetId(null), []);
   const scrollerRef = useRef(null);
   const snapshotRef = useRef(saved);
   const persistenceEnabled = useRef(true);
@@ -1057,8 +1059,8 @@ function MistakeWorkspace({ subjectId, roundNo, reversed, view, setView }) {
         <div className="text-center text-[10px] text-gray-300 mt-4">Build: {APP_VERSION}</div>
       </>}
       {view === 'add' && <MistakeForm mode="add" subjectId={subjectId} onFinish={() => setView('list')} onCancel={() => setView('list')}/>}
-      {view === 'detail' && (currentMistake?.id === currentMistakeId ? <MistakeDetail key={currentMistake.id} mistake={currentMistake} reviewRoundNo={roundNo} onRemoveFromRound={() => { setCurrentMistakeId(null); setView('list'); }} onEdit={() => setView('edit')} onNext={handleNextMistake} hasNext={!navigating && currentIndex >= 0 && (currentIndex < list.length - 1 || hasMore)} onPrev={handlePrevMistake} hasPrev={!navigating && currentIndex > 0} onBack={() => setView('list')}/> : <div className="p-10 text-center text-gray-400">正在加载题目...</div>)}
-      {view === 'edit' && currentMistake?.id === currentMistakeId && <MistakeForm mode="edit" initialData={currentMistake} subjectId={subjectId} onFinish={() => setView('detail')} onCancel={() => setView('detail')}/>}
+      {view === 'detail' && (currentMistake?.id === currentMistakeId ? <MistakeDetail key={currentMistake.id} mistake={currentMistake} reviewRoundNo={roundNo} initialAddRelated={relatedEditorTargetId === currentMistake.id} onRelatedRequestConsumed={consumeRelatedEditorRequest} onRemoveFromRound={() => { setCurrentMistakeId(null); setView('list'); }} onEdit={() => setView('edit')} onNext={handleNextMistake} hasNext={!navigating && currentIndex >= 0 && (currentIndex < list.length - 1 || hasMore)} onPrev={handlePrevMistake} hasPrev={!navigating && currentIndex > 0} onBack={() => setView('list')}/> : <div className="p-10 text-center text-gray-400">正在加载题目...</div>)}
+      {view === 'edit' && currentMistake?.id === currentMistakeId && <MistakeForm mode="edit" initialData={currentMistake} subjectId={subjectId} onFinish={() => setView('detail')} onCancel={() => setView('detail')} onAddRelated={() => { setRelatedEditorTargetId(currentMistakeId); setView('detail'); }}/>}
     </div>
   );
 }
@@ -1874,13 +1876,13 @@ function MistakeList({ mistakes, highlightedId, scrollRoot, onAdd, onOpen, onLoa
   );
 }
 // [修改] 接收 subjectId
-function MistakeForm({ mode, initialData, onFinish, onCancel, subjectId }) {
+function MistakeForm({ mode, initialData, onFinish, onCancel, onAddRelated, subjectId }) {
   const isEdit = mode === 'edit';
   const [title, setTitle] = useState(initialData?.title || '');
   const [questionMarkdown, setQuestionMarkdown] = useState(initialData?.questionMarkdown || '');
 
   const [qImages, setQImages] = useState(
-    initialData?.questionImages || (initialData?.questionImg ? [initialData.questionImg] : [])
+    getQuestionImages(initialData)
   );
 
 const [aImages, setAImages] = useState(
@@ -1892,7 +1894,7 @@ const [aImages, setAImages] = useState(
   const [isQuestionPreviewMode, setIsQuestionPreviewMode] = useState(false);
   const [isReflectionPreviewMode, setIsReflectionPreviewMode] = useState(false);
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (addRelated = false) => {
       if (loading) return;
   if (qImages.length === 0 && !questionMarkdown.trim()) {
     return alert("请上传题目图片，或输入 Markdown 格式的题目内容");
@@ -1935,7 +1937,8 @@ const [aImages, setAImages] = useState(
       });
     }
 
-    onFinish();
+    if (addRelated === true && onAddRelated) onAddRelated();
+    else onFinish();
   } catch (e) {
     alert("保存失败: " + e.message);
   } finally {
@@ -2051,6 +2054,13 @@ const [aImages, setAImages] = useState(
           )}
         </div>
       </div>
+      {isEdit && onAddRelated && (
+        <section className="rounded-xl border border-violet-100 bg-violet-50/50 p-4 space-y-3">
+          <h3 className="font-bold text-gray-900">举一反三</h3>
+          <p className="text-xs text-gray-500">已添加 {Array.isArray(initialData.relatedQuestions) ? initialData.relatedQuestions.length : 0} 道相关题</p>
+          <button type="button" onClick={() => handleSubmit(true)} disabled={loading} className="flex items-center gap-1.5 rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"><Plus size={16}/> 保存并添加相关题</button>
+        </section>
+      )}
       <button onClick={handleSubmit} disabled={loading} className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-bold shadow-md mt-4 flex justify-center items-center gap-2"><Save size={18} /> {loading ? '保存中...' : '保存'}</button>
     </div>
   );
@@ -2069,7 +2079,7 @@ function ImageUpload({ value, onChange, isAnalysis }) {
 function RelatedQuestionForm({ initialData, defaultTitle, onSave, onCancel, onDelete }) {
   const [title, setTitle] = useState(initialData?.title || defaultTitle || '举一反三题');
   const [questionMarkdown, setQuestionMarkdown] = useState(initialData?.questionMarkdown || '');
-  const [questionImages, setQuestionImages] = useState(initialData?.questionImages || []);
+  const [questionImages, setQuestionImages] = useState(() => getQuestionImages(initialData));
   const [reflection, setReflection] = useState(initialData?.reflection || '');
   const [analysisText, setAnalysisText] = useState(initialData?.analysisText || '');
   const [analysisImages, setAnalysisImages] = useState(initialData?.analysisImages || []);
@@ -2094,6 +2104,7 @@ function RelatedQuestionForm({ initialData, defaultTitle, onSave, onCancel, onDe
         title: title.trim() || defaultTitle || '举一反三题',
         questionMarkdown,
         questionImages,
+        questionImg: questionImages[0] || null,
         reflection,
         analysisText,
         analysisImages,
@@ -2195,12 +2206,20 @@ function RelatedQuestionForm({ initialData, defaultTitle, onSave, onCancel, onDe
   );
 }
 
-// 原题和悬浮题目面板共用同一套内容，保证文字、公式和全部图片一致。
+function getQuestionImages(question) {
+  const images = Array.isArray(question?.questionImages)
+    ? question.questionImages.filter(image => typeof image === 'string' && image.trim())
+    : [];
+  if (images.length > 0) return images;
+  return typeof question?.questionImg === 'string' && question.questionImg.trim() ? [question.questionImg] : [];
+}
+
+// 原题、相关题和悬浮面板统一：有图片只展示图片，无图片才展示 Markdown。
 function QuestionContent({ question }) {
-  const images = question.questionImages || (question.questionImg ? [question.questionImg] : []);
+  const images = getQuestionImages(question);
   return (
     <div className="space-y-3">
-      {question.questionMarkdown?.trim() && (
+      {images.length === 0 && question.questionMarkdown?.trim() && (
         <div className="rounded-xl border border-blue-100 bg-blue-50/30 p-4 sm:p-5 overflow-x-auto prose prose-sm sm:prose-base max-w-none">
           <MarkdownView>{question.questionMarkdown}</MarkdownView>
         </div>
@@ -2274,10 +2293,10 @@ function QuestionPeek({ question }) {
 }
 
 // --- 错题详情：原题 + 举一反三相关题目录 ---
-function MistakeDetail({ mistake, reviewRoundNo, onRemoveFromRound, onEdit, onNext, hasNext, onPrev, hasPrev, onBack }) {
+function MistakeDetail({ mistake, reviewRoundNo, initialAddRelated = false, onRelatedRequestConsumed, onRemoveFromRound, onEdit, onNext, hasNext, onPrev, hasPrev, onBack }) {
   const [showAnalysis, setShowAnalysis] = useState(false);
   const [selectedRelatedId, setSelectedRelatedId] = useState(null);
-  const [relatedEditor, setRelatedEditor] = useState(null);
+  const [relatedEditor, setRelatedEditor] = useState(() => initialAddRelated ? { mode: 'add' } : null);
   const [decisionSaving, setDecisionSaving] = useState(false);
   const decisionLock = useRef(false);
   const currentRound = Number(reviewRoundNo) || 1;
@@ -2293,8 +2312,11 @@ function MistakeDetail({ mistake, reviewRoundNo, onRemoveFromRound, onEdit, onNe
   useEffect(() => {
     setShowAnalysis(false);
     setSelectedRelatedId(null);
-    setRelatedEditor(null);
   }, [mistake.id]);
+
+  useEffect(() => {
+    if (initialAddRelated) onRelatedRequestConsumed?.();
+  }, [initialAddRelated, onRelatedRequestConsumed]);
 
   useEffect(() => {
     setShowAnalysis(false);
@@ -2424,7 +2446,7 @@ function MistakeDetail({ mistake, reviewRoundNo, onRemoveFromRound, onEdit, onNe
       </div>
 
       <div className="p-4 space-y-6">
-        <section className="rounded-2xl border border-violet-100 bg-gradient-to-br from-violet-50/70 to-blue-50/60 p-4">
+        {relatedQuestions.length > 0 && <section className="rounded-2xl border border-violet-100 bg-gradient-to-br from-violet-50/70 to-blue-50/60 p-4">
           <div className="flex items-center justify-between gap-3 mb-3">
             <div>
               <h3 className="font-bold text-gray-900 flex items-center gap-2"><FileText size={18} className="text-violet-600"/> 举一反三题目目录</h3>
@@ -2440,7 +2462,7 @@ function MistakeDetail({ mistake, reviewRoundNo, onRemoveFromRound, onEdit, onNe
               </button>
             ))}
           </div>
-        </section>
+        </section>}
 
         <QuestionContent question={activeQuestion}/>
 
