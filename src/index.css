@@ -12,6 +12,52 @@ input, textarea {
   font-size: 16px; /* 防止iOS缩放 */
 }
 
+.mistake-list-scroller {
+  scrollbar-width: none;
+  padding-right: max(28px, env(safe-area-inset-right, 0px));
+}
+.mistake-list-scroller::-webkit-scrollbar { display: none; }
+.mistake-list-scroll-handle {
+  position: absolute;
+  z-index: 10;
+  top: 12px;
+  right: 0;
+  bottom: 88px;
+  width: 24px;
+  touch-action: none;
+  user-select: none;
+  cursor: pointer;
+  outline: none;
+}
+.mistake-list-scroll-thumb {
+  position: absolute;
+  top: 0;
+  left: 10px;
+  width: 4px;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, .35);
+  transition: background-color .15s, width .15s;
+  pointer-events: none;
+}
+.mistake-list-scroll-handle:hover .mistake-list-scroll-thumb,
+.mistake-list-scroll-handle:focus-visible .mistake-list-scroll-thumb,
+.mistake-list-scroll-handle.is-dragging .mistake-list-scroll-thumb {
+  width: 6px;
+  background: rgba(71, 85, 105, .65);
+}
+.mistake-list-scroll-handle:focus-visible { outline: 2px solid #93c5fd; border-radius: 999px; }
+.mistake-list-scroll-handle.is-dragging { cursor: grabbing; }
+.mistake-list-quick-search {
+  position: absolute;
+  bottom: 12px;
+  right: 88px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mistake-list-quick-search.is-open { left: 12px; }
+
 /* 工具栏槽位固定：按钮缺少、文案变化和加载状态都不改变翻页位置。 */
 .math-detail-toolbar {
   position: fixed;

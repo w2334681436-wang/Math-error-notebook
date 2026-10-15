@@ -37,6 +37,8 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { exportMistakesForAI } from './aiExport';
 import AiExportDialog from './AiExportDialog';
+import ListScrollHandle from './ListScrollHandle';
+import MistakeListSearch from './MistakeListSearch';
 import {
   getLastReviewProgressKey,
   removeMistakeFromReviewRound,
@@ -860,6 +862,7 @@ function MistakeWorkspace({ subjectId, roundNo, reversed, view, setView }) {
   const [relatedEditorTargetId, setRelatedEditorTargetId] = useState(null);
   const consumeRelatedEditorRequest = useCallback(() => setRelatedEditorTargetId(null), []);
   const scrollerRef = useRef(null);
+  const scrollerId = useId();
   const snapshotRef = useRef(saved);
   const persistenceEnabled = useRef(true);
   const restorePending = useRef(true);
@@ -1029,18 +1032,17 @@ function MistakeWorkspace({ subjectId, roundNo, reversed, view, setView }) {
   const currentIndex = list.findIndex(item => item.id === currentMistakeId);
 
   return (
-    <div ref={scrollerRef} data-mistake-list-owner="react" onScroll={handleScroll} className="w-full max-w-6xl mx-auto h-full overflow-y-auto px-3 sm:px-5 lg:px-8 py-4 pb-28">
+    <div className="relative w-full max-w-6xl mx-auto h-full">
+    <div id={scrollerId} ref={scrollerRef} data-mistake-list-owner="react" onScroll={handleScroll} className={cn("w-full h-full overflow-y-auto px-3 sm:px-5 lg:px-8 py-4 pb-28", view === 'list' && 'mistake-list-scroller')}>
+      <div>
       {view === 'list' && <>
-        <div className="mb-4 relative">
-          <Search size={18} className="absolute left-3 top-3.5 text-gray-400"/>
-          <input value={searchQuery} onChange={event => {
+        <MistakeListSearch scrollRef={scrollerRef} value={searchQuery} onChange={event => {
             progressRequestRef.current += 1;
             restorePending.current = true;
             snapshotRef.current = { ...snapshotRef.current, scrollTop: 0, anchorId: null, anchorOffset: 0 };
             setSearchQuery(event.target.value);
             setVisibleLimit(MISTAKE_PAGE_SIZE);
-          }} placeholder="搜索错题标题、复盘、解析、日期..." className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm transition"/>
-        </div>
+          }}/>
         <div id="mn-global-list-reverse-toggle" data-native-sort="true" className="flex justify-end mb-3">
           <button type="button" data-role="reverse-toggle" onClick={() => {
             saveListPosition();
@@ -1061,6 +1063,9 @@ function MistakeWorkspace({ subjectId, roundNo, reversed, view, setView }) {
       {view === 'add' && <MistakeForm mode="add" subjectId={subjectId} onFinish={() => setView('list')} onCancel={() => setView('list')}/>}
       {view === 'detail' && (currentMistake?.id === currentMistakeId ? <MistakeDetail key={currentMistake.id} mistake={currentMistake} reviewRoundNo={roundNo} initialAddRelated={relatedEditorTargetId === currentMistake.id} onRelatedRequestConsumed={consumeRelatedEditorRequest} onRemoveFromRound={() => { setCurrentMistakeId(null); setView('list'); }} onEdit={() => setView('edit')} onNext={handleNextMistake} hasNext={!navigating && currentIndex >= 0 && (currentIndex < list.length - 1 || hasMore)} onPrev={handlePrevMistake} hasPrev={!navigating && currentIndex > 0} onBack={() => setView('list')}/> : <div className="p-10 text-center text-gray-400">正在加载题目...</div>)}
       {view === 'edit' && currentMistake?.id === currentMistakeId && <MistakeForm mode="edit" initialData={currentMistake} subjectId={subjectId} onFinish={() => setView('detail')} onCancel={() => setView('detail')} onAddRelated={() => { setRelatedEditorTargetId(currentMistakeId); setView('detail'); }}/>}
+      </div>
+    </div>
+    {view === 'list' && <ListScrollHandle scrollRef={scrollerRef} controlsId={scrollerId}/>}
     </div>
   );
 }
