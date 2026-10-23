@@ -32,6 +32,7 @@ import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import { parseRichNoteFile, downloadRichNotePackage } from './richNotePackage';
+import { RICH_NOTE_AI_PROMPT } from './richNoteAiPrompt';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -1082,6 +1083,7 @@ function NoteSystem() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(true); 
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false); 
   const [clipboard, setClipboard] = useState({ items: [], mode: 'copy' });
+  const [aiPromptCopied, setAiPromptCopied] = useState(false);
 
   const allNotes = useLiveQuery(() => db.notes.orderBy('order').toArray()) || [];
 
@@ -1149,6 +1151,41 @@ function NoteSystem() {
       alert('❌ 图文笔记导入失败：' + (error?.message || error));
     } finally {
       event.target.value = '';
+    }
+  };
+
+  const handleCopyRichNotePrompt = async () => {
+    const fallbackCopy = () => {
+      const input = document.createElement('textarea');
+      input.value = RICH_NOTE_AI_PROMPT;
+      input.setAttribute('readonly', '');
+      input.style.position = 'fixed';
+      input.style.opacity = '0';
+      document.body.appendChild(input);
+      try {
+        input.focus();
+        input.select();
+        if (!document.execCommand('copy')) throw new Error('浏览器未允许复制');
+      } finally {
+        input.remove();
+      }
+    };
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(RICH_NOTE_AI_PROMPT);
+        } catch {
+          fallbackCopy();
+        }
+      } else {
+        fallbackCopy();
+      }
+      setAiPromptCopied(true);
+    } catch (error) {
+      setAiPromptCopied(false);
+      console.error('复制图文笔记提示词失败', error);
+      alert('无法自动复制提示词，请确认浏览器允许访问剪贴板后重试。');
     }
   };
 
@@ -1239,6 +1276,18 @@ function NoteSystem() {
             <UploadCloud size={15}/> 导入图文笔记（.knote / .md）
             <input type="file" accept=".knote,.md,application/json,text/markdown" onChange={handleRichNoteImport} className="hidden"/>
           </label>
+          <button
+            type="button"
+            onClick={handleCopyRichNotePrompt}
+            title="复制生成完整图文 .knote 笔记包的 AI 提示词"
+            className={cn("flex items-center justify-center gap-2 w-full border rounded py-2.5 text-xs font-bold transition",
+              aiPromptCopied
+                ? "border-green-200 bg-green-50 text-green-700 hover:bg-green-100"
+                : "border-gray-300 bg-white text-indigo-700 hover:bg-indigo-50")}
+          >
+            {aiPromptCopied ? <CheckCircle2 size={15}/> : <Copy size={15}/>}
+            {aiPromptCopied ? '已复制 AI 提示词（点击可再复制）' : '复制 AI 提示词（生成图文笔记包）'}
+          </button>
           <div className="grid grid-cols-2 gap-2">
             <button onClick={() => handleCreate('folder', 'root')} className="flex items-center justify-center gap-1 bg-white border border-gray-300 rounded py-2 text-xs font-bold hover:bg-gray-100"><Folder size={14}/> 根文件夹</button>
             <button onClick={() => handleCreate('file', 'root')} className="flex items-center justify-center gap-1 bg-blue-600 text-white rounded py-2 text-xs font-bold hover:bg-blue-700"><FileText size={14}/> 根知识点</button>
