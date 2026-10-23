@@ -4,6 +4,7 @@ import Dexie from 'dexie';
 import { LIST_CONTEXT_EVENT, readMistakeListState, writeMistakeListState, notifyListContextChanged, clearMistakeNavigationState } from './mistakeListState';
 import { toggleNextRound, toggleMastered as toggleReviewMastered } from './reviewRoundsPatch';
 import { db } from './db';
+import { addFirstRoundMember, migrateLegacyFirstRoundMembership } from './firstRoundMembership';
 import {
   MISTAKE_PAGE_SIZE,
   isMistakeListReversed,
@@ -267,7 +268,8 @@ const handleExport = async () => {
     // 第一行是备份元信息
     pushLine({
       format: 'MathNotebookBackupNDJSON',
-      version: 4,
+      version: 5,
+      firstRoundMembershipExplicit: true,
       appVersion: APP_VERSION,
       createdAt,
       counts
@@ -408,6 +410,8 @@ const importOldJsonBackup = async (file) => {
   const importedSubjects = backup.data.subjects || [];
   const importedRoundItems = (backup.data.reviewRoundItems || []).map(reviveImportedRecord);
   const importedRoundExclusions = (backup.data.reviewRoundExclusions || []).map(reviveImportedRecord);
+  const membershipIsExplicit = backup.firstRoundMembershipExplicit === true
+    || backup.data.firstRoundMembershipExplicit === true;
 
   await db.transaction(
     'rw',
@@ -446,6 +450,9 @@ const importOldJsonBackup = async (file) => {
     if (importedRoundExclusions.length > 0) {
       await db.reviewRoundExclusions.bulkPut(importedRoundExclusions.map(record => ({ ...record, subjectId: normalizeSubject(record) })));
     }
+    // 旧备份第一轮并没有成员记录，按“所有原题-历史移出项”还原一次，然后销毁旧隐藏标记。
+    // 新版备份已经显式记录第一轮成员，不能自动补题，否则会复活真正移出的题。
+    if (!membershipIsExplicit) await migrateLegacyFirstRoundMembership(db);
   });
 
   return {
@@ -632,6 +639,9 @@ const importNdjsonBackup = async (file) => {
         offset += records.length;
       }
       counts.subjects = 2;
+    }
+    if (meta.firstRoundMembershipExplicit !== true) {
+      await migrateLegacyFirstRoundMembership(db);
     }
   });
 
@@ -2092,7 +2102,7 @@ const [aImages, setAImages] = useState(
         await db.mistakeCards.put(buildMistakeCard(updatedMistake));
       });
     } else {
-      await db.transaction('rw', db.mistakes, db.mistakeCards, async () => {
+      await db.transaction('rw', db.mistakes, db.mistakeCards, db.reviewRoundItems, async () => {
         const id = await db.mistakes.add({
           ...data,
           subjectId,
@@ -2101,6 +2111,7 @@ const [aImages, setAImages] = useState(
 
         const newMistake = await db.mistakes.get(id);
         await db.mistakeCards.put(buildMistakeCard(newMistake));
+        await addFirstRoundMember(db, newMistake);
       });
     }
 
@@ -2528,7 +2539,7 @@ function MistakeDetail({ mistake, reviewRoundNo, initialAddRelated = false, onRe
     const roundNo = Number(reviewRoundNo) || 1;
     const roundName = roundNo === 1 ? '第一轮刷题' : `第${roundNo}轮刷题`;
 
-    if (!confirm(`只从“${roundName}”移出这道题吗？\n\n原题、相关题、题目图片、解析以及其他轮次都会完整保留。`)) return;
+    if (!confirm(`确定从“${roundName}”永久移除本轮的这道题吗？\n\n将真实删除本轮的题目成员记录，不是暂时隐藏。其他轮次不受影响；原题内容保留以便以后重新导入。`)) return;
 
     try {
       const result = await removeMistakeFromReviewRound(db, {
