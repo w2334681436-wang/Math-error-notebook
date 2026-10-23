@@ -1,5 +1,6 @@
 // 独立的错题增量导入协议；绝不清空或替换现有数据。
 import { buildMistakeCard } from './searchIndex';
+import { addFirstRoundMember } from './firstRoundMembership';
 
 export const MISTAKE_PACK_FORMAT = 'MathNotebookMistakePack';
 const MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
@@ -76,9 +77,8 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '') {
   if (pack.subject && subjectName && pack.subject !== subjectName) {
     throw new Error('错题包科目为「' + pack.subject + '」，当前选择的是「' + subjectName + '」，请先切换科目');
   }
-  // 用户点击“移出本轮”仅写 reviewRoundExclusions 隐藏原题。
-  // 重新导入既要识别原题，也必须取消第一轮的隐藏标记；三表原子事务避免半成功。
-  return db.transaction('rw', db.mistakes, db.mistakeCards, db.reviewRoundExclusions, async () => {
+  // 第一轮成员已经真正存储于 reviewRoundItems；再次导入已移出的题就重新创建成员行。
+  return db.transaction('rw', db.mistakes, db.mistakeCards, db.reviewRoundItems, async () => {
     const known = new Map();
     await db.mistakes.where('subjectId').equals(subjectId).each(record => {
       if (record.importKey) known.set(record.importKey, record.id);
@@ -99,13 +99,7 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '') {
           throw new Error('原错题记录缺失，请检查数据库一致性后重新导入');
         }
 
-        // “移出本轮”是软移出，不是删除原题；清理第一轮排除记录即可恢复可见。
-        // 删除可能存在的重复排除记录（早期版本曾允许多个）。
-        const removed = await db.reviewRoundExclusions
-          .where('[subjectId+roundNo+mistakeId]')
-          .equals([subjectId, 1, prior.id])
-          .delete();
-
+        // 不再去恢复“隐藏记录”；先前从本轮移除则新建一条独立的轮次成员记录。
         const updates = { createdAt };
         // 兼容旧AI包导入时没有题目截图：只有缺图才从新包补齐，保留用户已有截图。
         const pictures = Array.isArray(prior.questionImages) ? prior.questionImages.filter(Boolean) : [];
@@ -120,8 +114,8 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '') {
         }
         await db.mistakes.update(existingId, updates);
         await db.mistakeCards.put(buildMistakeCard({ ...prior, ...updates }));
-
-        if (removed > 0) restored++;
+        const wasReadded = await addFirstRoundMember(db, { ...prior, ...updates }, true);
+        if (wasReadded) restored++;
         else reordered++;
         continue;
       }
@@ -137,6 +131,7 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '') {
       };
       const id = await db.mistakes.add(record);
       await db.mistakeCards.put(buildMistakeCard({ ...record, id }));
+      await addFirstRoundMember(db, { ...record, id });
       added++;
       known.set(importKey, id);
     }
