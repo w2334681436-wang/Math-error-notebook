@@ -76,32 +76,61 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '') {
   if (pack.subject && subjectName && pack.subject !== subjectName) {
     throw new Error('错题包科目为「' + pack.subject + '」，当前选择的是「' + subjectName + '」，请先切换科目');
   }
-  return db.transaction('rw', db.mistakes, db.mistakeCards, async () => {
+  // 用户点击“移出本轮”仅写 reviewRoundExclusions 隐藏原题。
+  // 重新导入既要识别原题，也必须取消第一轮的隐藏标记；三表原子事务避免半成功。
+  return db.transaction('rw', db.mistakes, db.mistakeCards, db.reviewRoundExclusions, async () => {
     const known = new Map();
-    await db.mistakes.where('subjectId').equals(subjectId).each(item => {
-      if (item.importKey) known.set(item.importKey, item.id);
+    await db.mistakes.where('subjectId').equals(subjectId).each(record => {
+      if (record.importKey) known.set(record.importKey, record.id);
     });
-    let added = 0, reordered = 0;
+
+    let added = 0, restored = 0, reordered = 0, thumbnailsAdded = 0;
     const now = Date.now();
     for (let i = 0; i < pack.items.length; i++) {
       const item = pack.items[i];
       const importKey = MISTAKE_PACK_FORMAT + ':' + item.sourceId;
-      // 按文件顺序先后录入：越靠后的题创建时间越新，在默认倒序列表越靠上。
+      // 文件中先出现的题先导入，列表默认按 createdAt 倒序，因此末题显示在最上面。
       const createdAt = new Date(now - (pack.items.length - 1 - i) * 1000);
-      if (known.has(importKey)) {
-        // 用户若已导入旧包，再导入一次即可修正列表顺序。
-        // 只校准排序时间，完全保留原题、个人修改、复盘及掌握状态。
-        const id = known.get(importKey);
-        await db.mistakes.update(id, { createdAt });
-        const existing = await db.mistakes.get(id);
-        await db.mistakeCards.put(buildMistakeCard(existing));
-        reordered++;
+      const existingId = known.get(importKey);
+      if (existingId !== undefined) {
+        const prior = await db.mistakes.get(existingId);
+        if (!prior) {
+          known.delete(importKey);
+          throw new Error('原错题记录缺失，请检查数据库一致性后重新导入');
+        }
+
+        // “移出本轮”是软移出，不是删除原题；清理第一轮排除记录即可恢复可见。
+        // 删除可能存在的重复排除记录（早期版本曾允许多个）。
+        const removed = await db.reviewRoundExclusions
+          .where('[subjectId+roundNo+mistakeId]')
+          .equals([subjectId, 1, prior.id])
+          .delete();
+
+        const updates = { createdAt };
+        // 兼容旧AI包导入时没有题目截图：只有缺图才从新包补齐，保留用户已有截图。
+        const pictures = Array.isArray(prior.questionImages) ? prior.questionImages.filter(Boolean) : [];
+        const hasPicture = pictures.length > 0 || Boolean(prior.questionImg);
+        if (!hasPicture && item.questionThumbnailAssetId) {
+          const image = item.questionAssets[item.questionThumbnailAssetId];
+          if (image) {
+            updates.questionImages = [image];
+            updates.questionAssets = { ...(prior.questionAssets || {}), ...item.questionAssets };
+            thumbnailsAdded++;
+          }
+        }
+        await db.mistakes.update(existingId, updates);
+        await db.mistakeCards.put(buildMistakeCard({ ...prior, ...updates }));
+
+        if (removed > 0) restored++;
+        else reordered++;
         continue;
       }
+
       const record = {
         subjectId, importKey, title: item.title,
         questionMarkdown: item.questionMarkdown, questionAssets: item.questionAssets,
-        questionImages: item.questionThumbnailAssetId ? [item.questionAssets[item.questionThumbnailAssetId]] : [], analysisText: item.analysisText, analysisAssets: item.analysisAssets,
+        questionImages: item.questionThumbnailAssetId ? [item.questionAssets[item.questionThumbnailAssetId]] : [],
+        analysisText: item.analysisText, analysisAssets: item.analysisAssets,
         analysisImages: [], reflection: item.reflection, tags: item.tags,
         isMastered: false, reviewLogs: [], reviewCount: 0, reviewTimes: 0,
         createdAt, updatedAt: createdAt
@@ -111,6 +140,6 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '') {
       added++;
       known.set(importKey, id);
     }
-    return { added, reordered };
+    return { added, restored, reordered, thumbnailsAdded };
   });
 }
