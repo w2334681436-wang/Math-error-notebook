@@ -53,7 +53,7 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
         <header className="sticky top-0 bg-white z-10 flex items-start justify-between p-5 border-b border-gray-100">
           <div>
             <h2 className="text-lg font-bold">导入错题</h2>
-            <p className="text-xs text-gray-500 mt-1">新增到「{subjectName || '当前科目'}」 · 不覆盖已有数据</p>
+            <p className="text-xs text-gray-500 mt-1">新增到「{subjectName || '当前科目'}」 · 文件靠后的题显示在列表上方</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭" className="p-2 rounded-lg hover:bg-gray-100"><X size={20}/></button>
         </header>
@@ -65,7 +65,7 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
               className="w-full flex items-center justify-center gap-2 rounded-xl p-4 border-2 border-dashed border-blue-200 bg-blue-50/40 text-blue-700 hover:bg-blue-50 text-sm font-bold">
               <UploadCloud size={20}/> {fileName || '点击选择 .merror / .json 错题包'}
             </button>
-            <p className="text-xs text-gray-500 mt-2">支持文字题干、Markdown、LaTeX、表格及内嵌静态图解；最多120道/24MB。</p>
+            <p className="text-xs text-gray-500 mt-2">支持文字题干、Markdown、LaTeX、表格及内嵌静态图解；文件第1题最后显示，第末题最先显示。最多120道/24MB。</p>
           </section>
           {pack && (
             <div className="border border-blue-100 bg-blue-50/40 rounded-xl p-3 text-sm">
@@ -76,12 +76,12 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
               </ol>
               {!result && <button type="button" onClick={commit} disabled={busy}
                 className="w-full mt-3 py-2.5 rounded-lg bg-blue-600 text-white font-bold disabled:opacity-60">
-                {busy ? '正在导入…' : '确认导入（保留现有错题）'}
+                {busy ? '正在导入…' : '确认导入（自动修正重复题排序）'}
               </button>}
             </div>
           )}
           {result && <p role="status" className="text-sm flex gap-2 items-center text-green-700 bg-green-50 rounded-xl p-3">
-            <CheckCircle2 size={18}/> 成功新增 {result.added} 道，跳过重复 {result.skipped} 道。
+            <CheckCircle2 size={18}/> 新增 {result.added} 道，已按文件顺序重排 {result.reordered} 道（原有解析、修改与掌握状态不变）。
           </p>}
           {error && <div role="alert" className="text-sm text-red-700 bg-red-50 rounded-xl p-3 flex items-start gap-2"><AlertTriangle size={18} className="shrink-0"/>{error}</div>}
           <section className="border-t border-gray-100 pt-4">
