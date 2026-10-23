@@ -26,23 +26,37 @@ export async function migrateLegacyFirstRoundMembership(tx) {
     if (Number(record.roundNo) === FIRST_ROUND) excludedIds.add(String(record.mistakeId));
   });
   const existingIds = new Set();
+  const inAnyRound = new Set();
   await members.each(record => {
+    inAnyRound.add(String(record.mistakeId));
     if (Number(record.roundNo) === FIRST_ROUND) existingIds.add(String(record.mistakeId));
   });
 
   const rows = [];
+  const orphanIds = [];
   let inserted = 0;
   // 每条记录只保留轻量成员信息，不把包含截图的原题复制到另一个大数组。
   await mistakes.each(record => {
     if (record.id === undefined || record.subjectId === undefined) return;
     const key = String(record.id);
-    if (excludedIds.has(key) || existingIds.has(key)) return;
+    if (excludedIds.has(key)) {
+      // 旧版“移出第一轮”但不在任何其他轮次时，永久清理历史幽灵原题。
+      if (!inAnyRound.has(key)) orphanIds.push(record.id);
+      return;
+    }
+    if (existingIds.has(key)) return;
     rows.push(roundMember(record));
   });
   for (let offset = 0; offset < rows.length; offset += 150) {
     const batch = rows.slice(offset, offset + 150);
     await members.bulkAdd(batch);
     inserted += batch.length;
+  }
+  const cards = tx.table('mistakeCards');
+  for (let offset = 0; offset < orphanIds.length; offset += 150) {
+    const batch = orphanIds.slice(offset, offset + 150);
+    await mistakes.bulkDelete(batch);
+    await cards.bulkDelete(batch);
   }
   // 第一轮隐藏表彻底退役；不把它当作永久删除的替代品。
   await exclusions.clear();
