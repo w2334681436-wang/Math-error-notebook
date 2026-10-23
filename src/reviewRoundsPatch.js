@@ -7,7 +7,7 @@
 // 5. 防止热更新/重复挂载/DOM 重绘导致“加入下一轮/已掌握”按钮重复出现。
 import { db } from './db';
 import { refreshMistakeCard } from './searchIndex';
-import { getExcludedMistakeIds, isMistakeInReviewRound, setSelectedReviewRound } from './reviewRoundActions';
+import { isMistakeInReviewRound, setSelectedReviewRound } from './reviewRoundActions';
 
 const SELECTED_ROUND_PREFIX = 'mathNotebook.selectedReviewRound.';
 const LAST_PROGRESS_PREFIX = 'mathNotebook.lastReviewProgress.';
@@ -149,13 +149,7 @@ async function getRoundCount(subjectId) {
 
 async function countRoundItems(subjectId, roundNo) {
   try {
-    if (roundNo <= 1 || !db.reviewRoundItems) {
-      const [total, excludedIds] = await Promise.all([
-        db.mistakes.where('subjectId').equals(subjectId).count(),
-        getExcludedMistakeIds(db, subjectId, 1),
-      ]);
-      return Math.max(0, total - excludedIds.size);
-    }
+    if (!db.reviewRoundItems) return 0;
     return db.reviewRoundItems
       .where('[subjectId+roundNo+order]')
       .between([subjectId, roundNo, 0], [subjectId, roundNo, Number.MAX_SAFE_INTEGER])
