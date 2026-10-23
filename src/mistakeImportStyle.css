@@ -1,0 +1,69 @@
+/* 错题包解析：只针对当前错题解析，不改变知识库、错题列表和备份。 */
+.mistake-rich-analysis {
+  max-width: min(100%, 820px);
+  margin-inline: auto;
+  font-size: 15.5px;
+  line-height: 1.78;
+  overflow-wrap: anywhere;
+}
+.mistake-rich-analysis > :first-child { margin-top: 0; }
+.mistake-rich-analysis h1, .mistake-rich-analysis h2,
+.mistake-rich-analysis h3, .mistake-rich-analysis h4 {
+  line-height: 1.35;
+  font-weight: 750;
+  color: #182338;
+}
+.mistake-rich-analysis h2 {
+  font-size: 1.27rem;
+  padding-bottom: .42rem;
+  border-bottom: 1px solid #e5eaf1;
+  margin: 1.8rem 0 .8rem;
+}
+.mistake-rich-analysis h3 {
+  font-size: 1.09rem;
+  margin: 1.3rem 0 .6rem;
+}
+.mistake-rich-analysis p { margin: .62em 0; }
+.mistake-rich-analysis blockquote {
+  border-left: 3px solid #9ca3af;
+  margin: 1em 0;
+  padding: .6rem .85rem;
+  background: #f8fafc;
+  border-radius: 0 .7rem .7rem 0;
+}
+.mistake-rich-analysis ul, .mistake-rich-analysis ol { padding-left: 1.5em; margin: .65em 0; }
+.mistake-rich-analysis li { margin: .33em 0; padding-left: .12em; }
+.mistake-rich-analysis strong { color: #0f172a; font-weight: 750; }
+.mistake-rich-analysis img {
+  display: block;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  margin: 1.2rem auto;
+  padding: .3rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: white;
+}
+.mistake-rich-analysis .katex-display { overflow-x: auto; overflow-y: hidden; padding: .5rem 0; margin: .9rem 0; }
+.mistake-rich-analysis table {
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+.mistake-rich-analysis th, .mistake-rich-analysis td {
+  border: 1px solid #e2e8f0;
+  padding: .5rem .65rem;
+  vertical-align: top;
+  white-space: normal;
+}
+.mistake-rich-analysis th { background: #f8fafc; font-weight: 700; }
+.mistake-rich-analysis hr { border-color: #e5e7eb; margin: 1.4rem 0; }
+.mistake-rich-analysis :is(code, pre) { max-width: 100%; }
+@media (max-width: 640px) {
+  .mistake-rich-analysis { font-size: 15px; line-height: 1.7; }
+  .mistake-rich-analysis h2 { font-size: 1.17rem; }
+  .mistake-rich-analysis th, .mistake-rich-analysis td { padding: .4rem .5rem; }
+}
