@@ -54,26 +54,45 @@ export async function isMistakeInReviewRound(db, { subjectId, roundNo, mistakeId
   return Boolean(item);
 }
 
-// “移出本轮”永久删除当前轮次的成员行，不创建任何隐藏或排除标记。
-// 原题存放于 mistakes，以便其它轮次及后续手动导入继续复用。
+// “移出本轮”永久删除本轮成员行，不写隐藏标记。
+// 若原题已不属于任何轮次，则连同原题/卡片一起删除，杜绝孤儿记录拦截下次导入。
+// 若原题仍属于其他轮次，就只删当前成员行，保留其余轮次的内容。
 export async function removeMistakeFromReviewRound(db, {
   subjectId, roundNo, mistakeId,
 }) {
   const normalizedRound = normalizeRoundNo(roundNo);
   if (!db.reviewRoundItems) throw new Error('当前数据库尚未完成轮次表升级');
 
-  const removedCount = await db.reviewRoundItems
-    .where('[subjectId+roundNo+mistakeId]')
-    .equals([subjectId, normalizedRound, mistakeId])
-    .delete();
+  return db.transaction('rw', db.reviewRoundItems, db.mistakes, db.mistakeCards, async () => {
+    const removedCount = await db.reviewRoundItems
+      .where('[subjectId+roundNo+mistakeId]')
+      .equals([subjectId, normalizedRound, mistakeId])
+      .delete();
 
-  const remainingInRound = await db.reviewRoundItems
-    .where('[subjectId+roundNo+order]')
-    .between(
-      [subjectId, normalizedRound, 0],
-      [subjectId, normalizedRound, Number.MAX_SAFE_INTEGER]
-    )
-    .count();
+    const remainingInRound = await db.reviewRoundItems
+      .where('[subjectId+roundNo+order]')
+      .between(
+        [subjectId, normalizedRound, 0],
+        [subjectId, normalizedRound, Number.MAX_SAFE_INTEGER]
+      )
+      .count();
 
-  return { removed: removedCount > 0, roundNo: normalizedRound, remainingInRound };
+    let originalDeleted = false;
+    if (removedCount > 0) {
+      const remainingMembershipCount = await db.reviewRoundItems.where('mistakeId').equals(mistakeId).count();
+      if (remainingMembershipCount === 0) {
+        // 没有任何轮次使用该题：彻底删除正文/图片与轻量搜索卡片。
+        // 下次导入同一 sourceId 应是新题，不是“恢复隐藏项”。
+        await db.mistakes.delete(mistakeId);
+        await db.mistakeCards.delete(mistakeId);
+        originalDeleted = true;
+      }
+    }
+    return {
+      removed: removedCount > 0,
+      roundNo: normalizedRound,
+      remainingInRound,
+      originalDeleted
+    };
+  });
 }
