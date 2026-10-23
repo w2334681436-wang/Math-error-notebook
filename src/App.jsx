@@ -30,7 +30,8 @@ import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSo
 import { CSS } from '@dnd-kit/utilities';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
+import { parseRichNoteFile, downloadRichNotePackage } from './richNotePackage';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -88,9 +89,10 @@ const normalizeMarkdownMath = (markdown = '') => {
     .join('');
 };
 
-function MarkdownView({ children }) {
+function MarkdownView({ children, assets = {} }) {
   return (
     <ReactMarkdown
+      urlTransform={(url) => (url.startsWith('note-asset:') && Object.prototype.hasOwnProperty.call(assets, url.slice(11))) ? url : defaultUrlTransform(url)}
       remarkPlugins={[
         remarkGfm,
         [remarkMath, { singleDollarTextMath: true }]
@@ -102,8 +104,9 @@ function MarkdownView({ children }) {
         a: ({ node: _node, ...props }) => (
           <a {...props} target="_blank" rel="noopener noreferrer" />
         ),
-        img: ({ node: _node, ...props }) => (
-          <img {...props} loading="lazy" className="max-w-full h-auto rounded-lg" />
+        img: ({ node: _node, src, ...props }) => (
+          <img {...props} src={src?.startsWith('note-asset:') ? assets[src.slice(11)] : src}
+            loading="lazy" className="max-w-full h-auto rounded-lg" />
         ),
         table: ({ node: _node, ...props }) => (
           <table {...props} className="w-full" />
@@ -1111,6 +1114,44 @@ function NoteSystem() {
     return newId;
   };
 
+  // Non-destructive portable rich-note import: adds folders + one knowledge note only.
+  const handleRichNoteImport = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const imported = await parseRichNoteFile(file);
+      const newId = await db.transaction('rw', db.notes, async () => {
+        let parentId = 'root';
+        for (const name of imported.folderPath) {
+          const siblings = await db.notes.where('parentId').equals(parentId).toArray();
+          let folder = siblings.find(item => item.type === 'folder' && item.title === name);
+          if (!folder) {
+            const id = await db.notes.add({
+              parentId, title: name, type: 'folder', content: [], tags: [],
+              order: Date.now(), createdAt: new Date()
+            });
+            folder = { id };
+          }
+          parentId = folder.id;
+        }
+        return db.notes.add({
+          parentId, title: imported.title, type: 'file', text: imported.text,
+          assets: imported.assets, content: [], tags: imported.tags,
+          order: Date.now(), createdAt: new Date()
+        });
+      });
+      setSearchTerm('');
+      setSelectedNodeId(newId);
+      setMobileMenuOpen(false);
+      alert('✅ 已导入知识库：' + imported.title + '\\n原有错题与笔记均未被覆盖。');
+    } catch (error) {
+      console.error('图文笔记导入失败', error);
+      alert('❌ 图文笔记导入失败：' + (error?.message || error));
+    } finally {
+      event.target.value = '';
+    }
+  };
+
   const handleAddToClipboard = (ids, mode) => { setClipboard({ items: ids, mode }); };
 
   const handlePaste = async (targetParentId) => {
@@ -1193,9 +1234,15 @@ function NoteSystem() {
             </DndContext>
           )}
         </div>
-        <div className="p-3 border-t border-gray-200 grid grid-cols-2 gap-2 shrink-0 bg-gray-50">
-           <button onClick={() => handleCreate('folder', 'root')} className="flex items-center justify-center gap-1 bg-white border border-gray-300 rounded py-2 text-xs font-bold hover:bg-gray-100"><Folder size={14}/> 根文件夹</button>
-           <button onClick={() => handleCreate('file', 'root')} className="flex items-center justify-center gap-1 bg-blue-600 text-white rounded py-2 text-xs font-bold hover:bg-blue-700"><FileText size={14}/> 根知识点</button>
+        <div className="p-3 border-t border-gray-200 shrink-0 bg-gray-50 space-y-2">
+          <label className="flex items-center justify-center gap-2 w-full border border-indigo-200 bg-indigo-50 text-indigo-700 rounded py-2.5 text-xs font-bold hover:bg-indigo-100 cursor-pointer">
+            <UploadCloud size={15}/> 导入图文笔记（.knote / .md）
+            <input type="file" accept=".knote,.md,application/json,text/markdown" onChange={handleRichNoteImport} className="hidden"/>
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={() => handleCreate('folder', 'root')} className="flex items-center justify-center gap-1 bg-white border border-gray-300 rounded py-2 text-xs font-bold hover:bg-gray-100"><Folder size={14}/> 根文件夹</button>
+            <button onClick={() => handleCreate('file', 'root')} className="flex items-center justify-center gap-1 bg-blue-600 text-white rounded py-2 text-xs font-bold hover:bg-blue-700"><FileText size={14}/> 根知识点</button>
+          </div>
         </div>
       </div>
 
@@ -1216,8 +1263,19 @@ function NoteSystem() {
               clipboardCount={clipboard.items.length}
             />
           ) : (
-            <NoteEditor 
-               nodeId={selectedNodeId} 
+            <NoteEditor
+               nodeId={selectedNodeId}
+               onExport={() => {
+                 const folderPath = [];
+                 let parentId = selectedNode.parentId;
+                 while (parentId && parentId !== 'root') {
+                   const parent = allNotes.find(item => item.id === parentId);
+                   if (!parent) break;
+                   if (parent.type === 'folder') folderPath.unshift(parent.title);
+                   parentId = parent.parentId;
+                 }
+                 downloadRichNotePackage(selectedNode, folderPath);
+               }}
                onNavigate={setSelectedNodeId} 
                onBack={() => {
                  setSelectedNodeId(selectedNode.parentId === 'root' ? null : selectedNode.parentId);
@@ -1561,7 +1619,7 @@ function FolderView({ folder, contents, onNavigate, onCreate, onBack, onCopy, on
 }
 
 // --- [更新] 知识点编辑器：支持 Markdown/LaTeX 文本 + 图片 ---
-function NoteEditor({ nodeId, onBack, onNavigate }) {
+function NoteEditor({ nodeId, onBack, onNavigate, onExport }) {
   const note = useLiveQuery(() => db.notes.get(nodeId), [nodeId]);
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState('');
@@ -1638,6 +1696,7 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
             <div className="w-[1px] h-4 bg-gray-300"></div>
             <button onClick={() => onNavigate(nextId)} disabled={!nextId} className="p-1.5 hover:bg-white hover:shadow-sm rounded-md disabled:opacity-30 transition-all text-gray-600"><ChevronRight size={18}/></button>
         </div>
+        <button onClick={onExport} title="导出含图片与公式的 .knote 笔记包" className="text-indigo-600 hover:bg-indigo-50 p-2 rounded-full"><Download size={20}/></button>
         <button onClick={handleDeleteNote} className="text-red-400 hover:bg-red-50 p-2 rounded-full"><Trash2 size={20}/></button>
       </div>
 
@@ -1668,7 +1727,7 @@ function NoteEditor({ nodeId, onBack, onNavigate }) {
     className="w-full p-4 bg-white border border-gray-200 rounded-xl min-h-[120px] prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100 prose-pre:text-gray-800 prose-code:text-gray-800 transition"
 >
                  {text ? (
-                   <MarkdownView>{text}</MarkdownView>
+                   <MarkdownView assets={note.assets || {}}>{text}</MarkdownView>
                  ) : (
                    <span className="text-gray-400 italic flex items-center gap-1"><Edit size={14}/> 点击此处开始编写笔记 (支持 Markdown & LaTeX)...</span>
                  )}
