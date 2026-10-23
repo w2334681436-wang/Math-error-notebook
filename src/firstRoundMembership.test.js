@@ -12,6 +12,7 @@ class Table {
   }
   async each(fn) { for (const item of this.data) fn(item); }
   async bulkAdd(items) { for (const item of items) await this.add(item); }
+  async bulkDelete(ids) { const set = new Set(ids); this.data = this.data.filter(row => !set.has(row.id)); }
   async add(item) { const id = this.nextId++; this.data.push({ ...item, id }); return id; }
   async clear() { this.data = []; }
   async delete(id) { this.data = this.data.filter(row => row.id !== id); }
@@ -75,15 +76,26 @@ test('v6 upgrade migrates visible first-round entries, not removed ones', async 
     mistakes: [
       { id: 101, subjectId: 1, title: '第17题', createdAt: new Date(2026, 9, 21) },
       { id: 102, subjectId: 1, title: '第18题', createdAt: new Date(2026, 9, 22) },
+      { id: 103, subjectId: 1, title: '第19题', createdAt: new Date(2026, 9, 22) },
     ],
-    roundItems: [{ id: 15, subjectId: 1, roundNo: 2, mistakeId: 101, order: 10 }],
-    exclusions: [{ id: 8, subjectId: 1, roundNo: 1, mistakeId: 102 }]
+    roundItems: [
+      { id: 15, subjectId: 1, roundNo: 2, mistakeId: 101, order: 10 },
+      { id: 16, subjectId: 1, roundNo: 2, mistakeId: 103, order: 20 }
+    ],
+    exclusions: [
+      { id: 8, subjectId: 1, roundNo: 1, mistakeId: 102 },
+      { id: 9, subjectId: 1, roundNo: 1, mistakeId: 103 }
+    ]
   });
   await migrateLegacyFirstRoundMembership(db);
   assert.equal(await isMistakeInReviewRound(db, { subjectId: 1, roundNo: 1, mistakeId: 101 }), true);
   assert.equal(await isMistakeInReviewRound(db, { subjectId: 1, roundNo: 1, mistakeId: 102 }), false);
   assert.equal(await isMistakeInReviewRound(db, { subjectId: 1, roundNo: 2, mistakeId: 101 }), true);
   assert.equal(db.reviewRoundExclusions.data.length, 0);
+  assert.equal(db.mistakes.data.some(item => item.id === 102), false);
+  assert.equal(db.mistakeCards.data.some(item => item.id === 102), false);
+  assert.equal(db.mistakes.data.some(item => item.id === 103), true);
+  assert.equal(await isMistakeInReviewRound(db, { subjectId: 1, roundNo: 2, mistakeId: 103 }), true);
 });
 
 test('remove truly deletes membership record but preserves other rounds and original', async () => {
