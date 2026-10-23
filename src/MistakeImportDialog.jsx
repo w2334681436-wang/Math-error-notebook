@@ -12,6 +12,7 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [replaceExistingAnalysis, setReplaceExistingAnalysis] = useState(false);
 
   const load = async (file) => {
     setError(''); setResult(null); setPack(null); setFileName(file?.name || '');
@@ -40,7 +41,7 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
     if (!pack || busy) return;
     setBusy(true); setError('');
     try {
-      const result = await addMistakePack(db, pack, subjectId, subjectName);
+      const result = await addMistakePack(db, pack, subjectId, subjectName, { replaceExistingAnalysis });
       setResult(result);
       onImported?.(result);
     } catch (e) { setError(e.message || '导入失败'); }
@@ -75,6 +76,10 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
               <ol className="max-h-32 overflow-y-auto list-decimal pl-5 text-xs mt-2 space-y-1">
                 {[...pack.items].reverse().map(item => <li key={item.sourceId}>{item.title}</li>)}
               </ol>
+              {!result && <label className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-slate-700 cursor-pointer">
+                <input type="checkbox" checked={replaceExistingAnalysis} onChange={e => setReplaceExistingAnalysis(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 accent-blue-600" />
+                <span><strong>更新同题已有的 AI 解析</strong>（修复旧版公式或更新讲解）。默认不勾选以保护手工修改；勾选后只替换解析文字和解析图解，保留个人复盘、题目截图、熟练度和复盘次数。</span>
+              </label>}
               {!result && <button type="button" onClick={commit} disabled={busy}
                 className="w-full mt-3 py-2.5 rounded-lg bg-blue-600 text-white font-bold disabled:opacity-60">
                 {busy ? '正在导入…' : '确认导入 / 重新加入第一轮'}
@@ -82,7 +87,7 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
             </div>
           )}
           {result && <p role="status" className="text-sm flex gap-2 items-center text-green-700 bg-green-50 rounded-xl p-3">
-            <CheckCircle2 size={18}/> 新导入 {result.added} 道，重新加入第一轮 {result.restored} 道，原本就在列表中 {result.reordered} 道，补充原题截图 {result.thumbnailsAdded} 道。解析与复盘均保留。
+            <CheckCircle2 size={18}/> 新导入 {result.added} 道，重新加入第一轮 {result.restored} 道，原本就在列表中 {result.reordered} 道，补充原题截图 {result.thumbnailsAdded} 道，更新已有解析 {result.analysisUpdated || 0} 道。个人复盘与练习记录均保留。
           </p>}
           {error && <div role="alert" className="text-sm text-red-700 bg-red-50 rounded-xl p-3 flex items-start gap-2"><AlertTriangle size={18} className="shrink-0"/>{error}</div>}
           <section className="border-t border-gray-100 pt-4">
