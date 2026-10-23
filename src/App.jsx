@@ -39,6 +39,7 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { exportMistakesForAI } from './aiExport';
 import AiExportDialog from './AiExportDialog';
+import MistakeImportDialog from './MistakeImportDialog';
 import ListScrollHandle from './ListScrollHandle';
 import MistakeListSearch from './MistakeListSearch';
 import {
@@ -155,6 +156,7 @@ function App() {
   const [activeTab, setActiveTab] = useState('mistakes'); 
   const [aiExportProgress, setAiExportProgress] = useState(null);
   const [showAiExportDialog, setShowAiExportDialog] = useState(false);
+  const [showMistakeImportDialog, setShowMistakeImportDialog] = useState(false);
 
   // [新增] 科目管理逻辑
   const subjects = useLiveQuery(() => db.subjects.toArray()) || [];
@@ -756,6 +758,12 @@ const handleImport = async (e) => {
     <span className="hidden sm:inline">保存</span>
   </button>
 )}
+          {activeTab === 'mistakes' && mistakeView === 'list' && (
+            <button type="button" onClick={() => setShowMistakeImportDialog(true)}
+              className="px-3 py-2 bg-blue-50 hover:bg-blue-100 rounded-full text-blue-700 shrink-0 flex items-center gap-1 text-xs font-bold" title="增量导入AI错题包，不覆盖原数据">
+              <UploadCloud size={17}/><span>导入错题</span>
+            </button>
+          )}
           <button
             onClick={() => setShowAiExportDialog(true)}
             disabled={Boolean(aiExportProgress)}
@@ -821,6 +829,10 @@ const handleImport = async (e) => {
         </button>
       </div>
 
+      {showMistakeImportDialog && (
+        <MistakeImportDialog subjectId={activeSubjectId} subjectName={subjects.find(s => String(s.id) === String(activeSubjectId))?.name || ''}
+          onClose={() => setShowMistakeImportDialog(false)} onImported={() => { setActiveTab('mistakes'); setMistakeView('list'); }} />
+      )}
       {showAiExportDialog && (
         <AiExportDialog
           subjects={subjects}
@@ -2150,9 +2162,7 @@ const [aImages, setAImages] = useState(
           {isPreviewMode ? (
             <div className="w-full mt-3 p-4 bg-gray-50 border border-gray-200 rounded-xl min-h-[160px] prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2">
                {analysisText ? (
-                 <MarkdownView>
-  {analysisText}
-</MarkdownView>
+                 <MarkdownView assets={initialData?.analysisAssets || {}}>{analysisText}</MarkdownView>
                ) : (
                  <span className="text-gray-400 italic">暂无内容...</span>
                )}
@@ -2334,7 +2344,7 @@ function QuestionContent({ question }) {
     <div className="space-y-3">
       {images.length === 0 && question.questionMarkdown?.trim() && (
         <div className="rounded-xl border border-blue-100 bg-blue-50/30 p-4 sm:p-5 overflow-x-auto prose prose-sm sm:prose-base max-w-none">
-          <MarkdownView>{question.questionMarkdown}</MarkdownView>
+          <MarkdownView assets={question.questionAssets || {}}>{question.questionMarkdown}</MarkdownView>
         </div>
       )}
       <div className="space-y-2">
@@ -2612,7 +2622,7 @@ function MistakeDetail({ mistake, reviewRoundNo, initialAddRelated = false, onRe
               ))}
             </div>
             <div className="text-gray-700 text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100 prose-pre:text-gray-800 prose-code:text-gray-800 overflow-x-auto">
-              <MarkdownView>{activeQuestion.analysisText || '暂无文字解析'}</MarkdownView>
+              <MarkdownView assets={activeQuestion.analysisAssets || {}}>{activeQuestion.analysisText || '暂无文字解析'}</MarkdownView>
             </div>
           </div>
           <div className="h-20"/>
