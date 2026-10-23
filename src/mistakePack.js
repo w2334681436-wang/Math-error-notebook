@@ -77,8 +77,10 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '') {
     throw new Error('错题包科目为「' + pack.subject + '」，当前选择的是「' + subjectName + '」，请先切换科目');
   }
   return db.transaction('rw', db.mistakes, db.mistakeCards, async () => {
-    const existing = await db.mistakes.where('subjectId').equals(subjectId).toArray();
-    const known = new Set(existing.map(item => item.importKey).filter(Boolean));
+    const known = new Set();
+    await db.mistakes.where('subjectId').equals(subjectId).each(item => {
+      if (item.importKey) known.add(item.importKey);
+    });
     let added = 0, skipped = 0;
     const now = Date.now();
     for (let i = 0; i < pack.items.length; i++) {
