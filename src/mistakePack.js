@@ -72,7 +72,7 @@ export async function parseMistakePack(file) {
   return { subject: typeof data.subject === 'string' ? data.subject.trim() : '', items };
 }
 
-export async function addMistakePack(db, pack, subjectId, subjectName = '') {
+export async function addMistakePack(db, pack, subjectId, subjectName = '', options = {}) {
   if (!subjectId) throw new Error('请先选择导入的科目');
   if (pack.subject && subjectName && pack.subject !== subjectName) {
     throw new Error('错题包科目为「' + pack.subject + '」，当前选择的是「' + subjectName + '」，请先切换科目');
@@ -84,7 +84,7 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '') {
       if (record.importKey) known.set(record.importKey, record.id);
     });
 
-    let added = 0, restored = 0, reordered = 0, thumbnailsAdded = 0;
+    let added = 0, restored = 0, reordered = 0, thumbnailsAdded = 0, analysisUpdated = 0;
     const now = Date.now();
     for (let i = 0; i < pack.items.length; i++) {
       const item = pack.items[i];
@@ -101,6 +101,14 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '') {
 
         // 不再去恢复“隐藏记录”；先前从本轮移除则新建一条独立的轮次成员记录。
         const updates = { createdAt };
+        // Explicit opt-in: refresh AI explanation without overwriting a learner's
+        // personal reflections, mastery, history, or the existing question.
+        if (options.replaceExistingAnalysis === true) {
+          updates.analysisText = item.analysisText;
+          updates.analysisAssets = { ...(prior.analysisAssets || {}), ...item.analysisAssets };
+          updates.updatedAt = new Date();
+          analysisUpdated++;
+        }
         // 兼容旧AI包导入时没有题目截图：只有缺图才从新包补齐，保留用户已有截图。
         const pictures = Array.isArray(prior.questionImages) ? prior.questionImages.filter(Boolean) : [];
         const hasPicture = pictures.length > 0 || Boolean(prior.questionImg);
@@ -135,6 +143,6 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '') {
       added++;
       known.set(importKey, id);
     }
-    return { added, restored, reordered, thumbnailsAdded };
+    return { added, restored, reordered, thumbnailsAdded, analysisUpdated };
   });
 }
