@@ -831,7 +831,7 @@ const handleImport = async (e) => {
 
       {showMistakeImportDialog && (
         <MistakeImportDialog subjectId={activeSubjectId} subjectName={subjects.find(s => String(s.id) === String(activeSubjectId))?.name || ''}
-          onClose={() => setShowMistakeImportDialog(false)} onImported={() => { setActiveTab('mistakes'); setMistakeView('list'); }} />
+          onClose={() => setShowMistakeImportDialog(false)} onImported={() => { setSelectedReviewRound(activeSubjectId, 1); notifyListContextChanged(activeSubjectId); setActiveTab('mistakes'); setMistakeView('list'); }} />
       )}
       {showAiExportDialog && (
         <AiExportDialog
