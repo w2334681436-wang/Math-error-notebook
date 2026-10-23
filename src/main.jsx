@@ -4,6 +4,7 @@ import App from './App.jsx';
 import './index.css';
 import 'katex/dist/katex.min.css';
 import './answerPreviewStyle.css';
+import './mistakeImportStyle.css';
 import './answerPreviewPatch.js';
 import './reviewRoundsPatch.js';
 import './mistakeMoveSortPatch.js';
