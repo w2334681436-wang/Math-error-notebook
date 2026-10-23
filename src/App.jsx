@@ -2654,7 +2654,7 @@ function MistakeDetail({ mistake, reviewRoundNo, initialAddRelated = false, onRe
             {inNextRound ? '取消加入' : '加入'}第{nextRound}轮
           </button>
           <button type="button" onClick={onNext} disabled={!isOriginal || !hasNext} className="math-toolbar-next bg-blue-50 text-blue-600" title="下一题" aria-label="下一题"><ChevronRight size={24}/></button>
-          <button type="button" onClick={handleRemoveFromRound} disabled={!isOriginal || decisionSaving} className="math-toolbar-remove bg-red-50 text-red-500" title={`只从第${currentRound}轮移出，保留原题和其他轮次`}><ListX size={17}/> 移出本轮</button>
+          <button type="button" onClick={handleRemoveFromRound} disabled={!isOriginal || decisionSaving} className="math-toolbar-remove bg-red-50 text-red-500" title={`永久删除第${currentRound}轮成员记录；其他轮次保留，若无其他轮次则连原题一并删除`}><ListX size={17}/> 移出本轮</button>
         </div>
 
         <div className={cn('space-y-4 transition-all duration-300', showAnalysis ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden')}>
