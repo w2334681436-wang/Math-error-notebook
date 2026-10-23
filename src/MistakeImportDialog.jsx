@@ -70,9 +70,10 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
           {pack && (
             <div className="border border-blue-100 bg-blue-50/40 rounded-xl p-3 text-sm">
               <p className="font-bold mb-1">校验完成：{pack.items.length}道</p>
+              <p className="text-xs text-blue-700">预计列表从上到下（最后导入的题排最前）：</p>
               <p className="text-xs text-gray-500">文件学科：{pack.subject || '未指定'} · 导入学科：{subjectName || '当前'}</p>
               <ol className="max-h-32 overflow-y-auto list-decimal pl-5 text-xs mt-2 space-y-1">
-                {pack.items.map(item => <li key={item.sourceId}>{item.title}</li>)}
+                {[...pack.items].reverse().map(item => <li key={item.sourceId}>{item.title}</li>)}
               </ol>
               {!result && <button type="button" onClick={commit} disabled={busy}
                 className="w-full mt-3 py-2.5 rounded-lg bg-blue-600 text-white font-bold disabled:opacity-60">
