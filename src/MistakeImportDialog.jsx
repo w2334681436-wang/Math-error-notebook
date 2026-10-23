@@ -65,7 +65,7 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
               className="w-full flex items-center justify-center gap-2 rounded-xl p-4 border-2 border-dashed border-blue-200 bg-blue-50/40 text-blue-700 hover:bg-blue-50 text-sm font-bold">
               <UploadCloud size={20}/> {fileName || '点击选择 .merror / .json 错题包'}
             </button>
-            <p className="text-xs text-gray-500 mt-2">支持文字题干、Markdown、LaTeX、原题截图、表格和图解。重新导入已移出第一轮的错题，会重新创建该轮的题目成员记录，保留原题、编辑和复盘。文件最后一题显示在列表最上方；最多120题/24MB。</p>
+            <p className="text-xs text-gray-500 mt-2">支持文字题干、Markdown、LaTeX、原题截图、表格和图解。重新导入时：原题已被彻底删除则新增；原题仍在其他轮次则重新创建第一轮成员，原有编辑与复盘不变。文件最后一题显示在列表最上方；最多120题/24MB。</p>
           </section>
           {pack && (
             <div className="border border-blue-100 bg-blue-50/40 rounded-xl p-3 text-sm">
