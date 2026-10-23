@@ -1,6 +1,7 @@
 // src/db.js
 import Dexie from 'dexie';
 import { buildMistakeCard } from './searchIndex';
+import { migrateLegacyFirstRoundMembership } from './firstRoundMembership';
 
 export const db = new Dexie('MathMistakesDB');
 
@@ -88,6 +89,21 @@ db.version(6).stores({
   mistakeCards: 'id, subjectId, createdAtMs, updatedAtMs, title, *tokens, [subjectId+createdAtMs]',
   reviewRoundItems: '++id, subjectId, roundNo, mistakeId, order, decidedAt, [subjectId+roundNo+order], [subjectId+roundNo+mistakeId]',
   reviewRoundExclusions: '++id, subjectId, roundNo, mistakeId, removedAt, [subjectId+roundNo], [subjectId+roundNo+mistakeId]'
+});
+
+
+// 版本7：所有轮次都通过 reviewRoundItems 真实成员行管理。
+// 从v6迁移时，只给尚未“移出”的第一轮题创建成员行；历史排除标记迁移后清空。
+// 删除成员行不会删除 mistakes 原题，也不会影响其他轮次。
+db.version(7).stores({
+  mistakes: '++id, title, createdAt, subjectId',
+  notes: '++id, parentId, title, type, *tags, order, [parentId+order]',
+  subjects: '++id, name',
+  mistakeCards: 'id, subjectId, createdAtMs, updatedAtMs, title, *tokens, [subjectId+createdAtMs]',
+  reviewRoundItems: '++id, subjectId, roundNo, mistakeId, order, decidedAt, [subjectId+roundNo+order], [subjectId+roundNo+mistakeId]',
+  reviewRoundExclusions: '++id, subjectId, roundNo, mistakeId, removedAt, [subjectId+roundNo], [subjectId+roundNo+mistakeId]'
+}).upgrade(async tx => {
+  await migrateLegacyFirstRoundMembership(tx);
 });
 
 function sanitizeMistakeRecord(record) {
