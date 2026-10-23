@@ -31,18 +31,6 @@ export function getLastReviewProgressKey(subjectId, roundNo) {
   return `${LAST_REVIEW_PROGRESS_PREFIX}${subjectId}.${normalizeRoundNo(roundNo)}`;
 }
 
-export async function getExcludedMistakeIds(db, subjectId, roundNo = FIRST_REVIEW_ROUND) {
-  if (!db.reviewRoundExclusions) return new Set();
-
-  const normalizedRound = normalizeRoundNo(roundNo);
-  const exclusions = await db.reviewRoundExclusions
-    .where('[subjectId+roundNo]')
-    .equals([subjectId, normalizedRound])
-    .toArray();
-
-  return new Set(exclusions.map(item => String(item.mistakeId)));
-}
-
 // 第一轮和后续轮次现在同样是“真实成员表”。无成员行 = 本轮确实不存在该题。
 export async function isMistakeInReviewRound(db, { subjectId, roundNo, mistakeId }) {
   if (!db.reviewRoundItems) return false;
