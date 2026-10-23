@@ -157,6 +157,7 @@ function App() {
   const [aiExportProgress, setAiExportProgress] = useState(null);
   const [showAiExportDialog, setShowAiExportDialog] = useState(false);
   const [showMistakeImportDialog, setShowMistakeImportDialog] = useState(false);
+  const [importRefreshCounter, setImportRefreshCounter] = useState(0);
 
   // [新增] 科目管理逻辑
   const subjects = useLiveQuery(() => db.subjects.toArray()) || [];
@@ -803,6 +804,7 @@ const handleImport = async (e) => {
         {activeTab === 'mistakes' ? (
           /* [修改] 传递当前科目ID */
          <MistakeSystem
+  key={`${activeSubjectId}:${importRefreshCounter}`}
   subjectId={activeSubjectId}
   view={mistakeView}
   setView={setMistakeView}
@@ -831,7 +833,7 @@ const handleImport = async (e) => {
 
       {showMistakeImportDialog && (
         <MistakeImportDialog subjectId={activeSubjectId} subjectName={subjects.find(s => String(s.id) === String(activeSubjectId))?.name || ''}
-          onClose={() => setShowMistakeImportDialog(false)} onImported={() => { writeMistakeListState(activeSubjectId, 1, { keyword: '', visibleLimit: MISTAKE_PAGE_SIZE, scrollTop: 0, anchorId: null, anchorOffset: 0 }); setSelectedReviewRound(activeSubjectId, 1); notifyListContextChanged(activeSubjectId); setActiveTab('mistakes'); setMistakeView('list'); }} />
+          onClose={() => setShowMistakeImportDialog(false)} onImported={() => { writeMistakeListState(activeSubjectId, 1, { keyword: '', visibleLimit: MISTAKE_PAGE_SIZE, scrollTop: 0, anchorId: null, anchorOffset: 0 }); setSelectedReviewRound(activeSubjectId, 1); setImportRefreshCounter(n => n + 1); setActiveTab('mistakes'); setMistakeView('list'); }} />
       )}
       {showAiExportDialog && (
         <AiExportDialog
@@ -845,7 +847,7 @@ const handleImport = async (e) => {
 }
 
 function MistakeSystem({ subjectId, view, setView }) {
-  const [revision, setRevision] = useState(0);
+  const [, setRevision] = useState(0);
   useEffect(() => {
     const update = event => {
       const relevant = event.type === 'storage'
@@ -865,7 +867,7 @@ function MistakeSystem({ subjectId, view, setView }) {
   }, [subjectId, setView]);
   if (!subjectId) return <div className="p-10 text-center text-gray-400">正在加载科目...</div>;
   const roundNo = getSelectedReviewRound(subjectId);
-  return <MistakeWorkspace key={`${subjectId}:${roundNo}:${revision}`} subjectId={subjectId} roundNo={roundNo} reversed={isMistakeListReversed(subjectId)} view={view} setView={setView}/>;
+  return <MistakeWorkspace key={`${subjectId}:${roundNo}`} subjectId={subjectId} roundNo={roundNo} reversed={isMistakeListReversed(subjectId)} view={view} setView={setView}/>;
 }
 
 function MistakeWorkspace({ subjectId, roundNo, reversed, view, setView }) {
