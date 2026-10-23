@@ -31,7 +31,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
-import { parseRichNoteFile, downloadRichNotePackage } from './richNotePackage';
+import { parseRichNoteCollection, downloadRichNotePackage } from './richNotePackage';
 import { RICH_NOTE_AI_PROMPT } from './richNoteAiPrompt';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -1128,36 +1128,76 @@ function NoteSystem() {
     return newId;
   };
 
-  // Non-destructive portable rich-note import: adds folders + one knowledge note only.
+  // Single .knote and multi-note .knote bundle use the same import entry point.
+  // All items are validated before the transaction; a failed item cannot leave
+  // half-imported notes or folders in IndexedDB.
   const handleRichNoteImport = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      const imported = await parseRichNoteFile(file);
-      const newId = await db.transaction('rw', db.notes, async () => {
-        let parentId = 'root';
-        for (const name of imported.folderPath) {
-          const siblings = await db.notes.where('parentId').equals(parentId).toArray();
-          let folder = siblings.find(item => item.type === 'folder' && item.title === name);
-          if (!folder) {
-            const id = await db.notes.add({
-              parentId, title: name, type: 'folder', content: [], tags: [],
-              order: Date.now(), createdAt: new Date()
-            });
-            folder = { id };
+      const collection = await parseRichNoteCollection(file);
+      const result = await db.transaction('rw', db.notes, async () => {
+        const createdIds = [];
+        let skipped = 0;
+        let newFolders = 0;
+        const folderCache = new Map();
+
+        for (const imported of collection.notes) {
+          let parentId = 'root';
+          for (const name of imported.folderPath) {
+            const cacheKey = JSON.stringify([parentId, name]);
+            if (folderCache.has(cacheKey)) {
+              parentId = folderCache.get(cacheKey);
+              continue;
+            }
+            const siblings = await db.notes.where('parentId').equals(parentId).toArray();
+            let folder = siblings.find(item => item.type === 'folder' && item.title === name);
+            if (!folder) {
+              const id = await db.notes.add({
+                parentId, title: name, type: 'folder',
+                text: '', content: [], tags: [],
+                order: Date.now() + newFolders,
+                createdAt: new Date()
+              });
+              folder = { id };
+              newFolders += 1;
+            }
+            folderCache.set(cacheKey, folder.id);
+            parentId = folder.id;
           }
-          parentId = folder.id;
+
+          // Re-importing the exact same title in the same folder does not
+          // overwrite the user's edited notes or create duplicate entries.
+          const siblings = await db.notes.where('parentId').equals(parentId).toArray();
+          if (siblings.some(item => item.type === 'file' && item.title === imported.title)) {
+            skipped += 1;
+            continue;
+          }
+
+          const newId = await db.notes.add({
+            parentId, title: imported.title, type: 'file',
+            text: imported.text, assets: imported.assets,
+            content: [], tags: imported.tags,
+            order: Date.now() + createdIds.length,
+            createdAt: new Date()
+          });
+          createdIds.push(newId);
         }
-        return db.notes.add({
-          parentId, title: imported.title, type: 'file', text: imported.text,
-          assets: imported.assets, content: [], tags: imported.tags,
-          order: Date.now(), createdAt: new Date()
-        });
+        return { createdIds, skipped, newFolders, total: collection.notes.length };
       });
       setSearchTerm('');
-      setSelectedNodeId(newId);
-      setMobileMenuOpen(false);
-      alert('✅ 已导入知识库：' + imported.title + '\\n原有错题与笔记均未被覆盖。');
+      if (result.createdIds.length) {
+        setSelectedNodeId(result.createdIds[0]);
+        setMobileMenuOpen(false);
+      }
+      alert(
+        '✅ 图文笔记导入完成！\n\n'
+        + '新增笔记：' + result.createdIds.length + ' 篇\n'
+        + '按章节创建文件夹：' + result.newFolders + ' 个\n'
+        + '同路径同标题跳过：' + result.skipped + ' 篇\n'
+        + '合计检查：' + result.total + ' 篇\n\n'
+        + '原有错题及笔记均未被覆盖。'
+      );
     } catch (error) {
       console.error('图文笔记导入失败', error);
       alert('❌ 图文笔记导入失败：' + (error?.message || error));
@@ -1285,20 +1325,20 @@ function NoteSystem() {
         </div>
         <div className="p-3 border-t border-gray-200 shrink-0 bg-gray-50 space-y-2">
           <label className="flex items-center justify-center gap-2 w-full border border-indigo-200 bg-indigo-50 text-indigo-700 rounded py-2.5 text-xs font-bold hover:bg-indigo-100 cursor-pointer">
-            <UploadCloud size={15}/> 导入图文笔记（.knote / .md）
+            <UploadCloud size={15}/> 导入图文笔记（单篇/合集）
             <input type="file" accept=".knote,.md,application/json,text/markdown" onChange={handleRichNoteImport} className="hidden"/>
           </label>
           <button
             type="button"
             onClick={handleCopyRichNotePrompt}
-            title="复制生成完整图文 .knote 笔记包的 AI 提示词"
+            title="复制生成单篇或多篇自动分章节 .knote 笔记包的 AI 提示词"
             className={cn("flex items-center justify-center gap-2 w-full border rounded py-2.5 text-xs font-bold transition",
               aiPromptCopied
                 ? "border-green-200 bg-green-50 text-green-700 hover:bg-green-100"
                 : "border-gray-300 bg-white text-indigo-700 hover:bg-indigo-50")}
           >
             {aiPromptCopied ? <CheckCircle2 size={15}/> : <Copy size={15}/>}
-            {aiPromptCopied ? '已复制 AI 提示词（点击可再复制）' : '复制 AI 提示词（生成图文笔记包）'}
+            {aiPromptCopied ? '已复制 AI 提示词（点击可再复制）' : '复制 AI 提示词（生成单篇/合集）'}
           </button>
           <div className="grid grid-cols-2 gap-2">
             <button onClick={() => handleCreate('folder', 'root')} className="flex items-center justify-center gap-1 bg-white border border-gray-300 rounded py-2 text-xs font-bold hover:bg-gray-100"><Folder size={14}/> 根文件夹</button>
