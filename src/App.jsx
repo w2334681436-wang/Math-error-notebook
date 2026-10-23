@@ -2539,7 +2539,7 @@ function MistakeDetail({ mistake, reviewRoundNo, initialAddRelated = false, onRe
     const roundNo = Number(reviewRoundNo) || 1;
     const roundName = roundNo === 1 ? '第一轮刷题' : `第${roundNo}轮刷题`;
 
-    if (!confirm(`确定从“${roundName}”永久移除本轮的这道题吗？\n\n将真实删除本轮的题目成员记录，不是暂时隐藏。其他轮次不受影响；原题内容保留以便以后重新导入。`)) return;
+    if (!confirm(`确定从“${roundName}”永久移除本轮的这道题吗？\n\n将真实删除本轮的题目成员记录，不是暂时隐藏。其他轮次不受影响；若该题不属于任何其他轮次，原题、图片和解析也会永久删除。再次导入将创建新题。`)) return;
 
     try {
       const result = await removeMistakeFromReviewRound(db, {
