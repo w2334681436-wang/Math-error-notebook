@@ -1,6 +1,5 @@
 // src/searchIndex.js
 import {
-  getExcludedMistakeIds,
   getSelectedReviewRound,
 } from './reviewRoundActions';
 
@@ -140,7 +139,11 @@ export async function refreshMistakeCard(db, mistakeId) {
 }
 
 async function queryFirstRoundCards(db, subjectId, q, offset, limit, reversed) {
-  const excludedIds = await getExcludedMistakeIds(db, subjectId, 1);
+  const firstRound = await db.reviewRoundItems
+    .where('[subjectId+roundNo+order]')
+    .between([subjectId, 1, 0], [subjectId, 1, Number.MAX_SAFE_INTEGER])
+    .toArray();
+  const memberIds = new Set(firstRound.map(row => String(row.mistakeId)));
 
   if (!q) {
     const collection = db.mistakeCards
@@ -151,14 +154,14 @@ async function queryFirstRoundCards(db, subjectId, q, offset, limit, reversed) {
 
     const cards = await orderedCollection.toArray();
     return cards
-      .filter(card => !excludedIds.has(String(card.id)))
+      .filter(card => memberIds.has(String(card.id)))
       .slice(offset, offset + limit);
   }
 
   // tokens 有容量上限，不能用它排除长解析末尾、英文子串等合法命中。
   const candidates = await db.mistakeCards.where('subjectId').equals(subjectId).toArray();
   return candidates
-    .filter(card => !excludedIds.has(String(card.id)))
+    .filter(card => memberIds.has(String(card.id)))
     .filter(card => cardMatchesKeyword(card, q))
     .sort((a, b) => {
       const at = a.createdAtMs || 0;
