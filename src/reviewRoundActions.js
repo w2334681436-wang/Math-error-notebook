@@ -43,19 +43,10 @@ export async function getExcludedMistakeIds(db, subjectId, roundNo = FIRST_REVIE
   return new Set(exclusions.map(item => String(item.mistakeId)));
 }
 
+// 第一轮和后续轮次现在同样是“真实成员表”。无成员行 = 本轮确实不存在该题。
 export async function isMistakeInReviewRound(db, { subjectId, roundNo, mistakeId }) {
-  const normalizedRound = normalizeRoundNo(roundNo);
-
-  if (normalizedRound === FIRST_REVIEW_ROUND) {
-    if (!db.reviewRoundExclusions) return true;
-    const exclusion = await db.reviewRoundExclusions
-      .where('[subjectId+roundNo+mistakeId]')
-      .equals([subjectId, normalizedRound, mistakeId])
-      .first();
-    return !exclusion;
-  }
-
   if (!db.reviewRoundItems) return false;
+  const normalizedRound = normalizeRoundNo(roundNo);
   const item = await db.reviewRoundItems
     .where('[subjectId+roundNo+mistakeId]')
     .equals([subjectId, normalizedRound, mistakeId])
@@ -63,41 +54,13 @@ export async function isMistakeInReviewRound(db, { subjectId, roundNo, mistakeId
   return Boolean(item);
 }
 
-// 只修改“当前轮次的成员关系”，绝不删除 mistakes 原题或其他轮次记录。
+// “移出本轮”永久删除当前轮次的成员行，不创建任何隐藏或排除标记。
+// 原题存放于 mistakes，以便其它轮次及后续手动导入继续复用。
 export async function removeMistakeFromReviewRound(db, {
-  subjectId,
-  roundNo,
-  mistakeId,
-  title = '',
+  subjectId, roundNo, mistakeId,
 }) {
   const normalizedRound = normalizeRoundNo(roundNo);
-
-  if (normalizedRound === FIRST_REVIEW_ROUND) {
-    if (!db.reviewRoundExclusions) {
-      throw new Error('当前数据库尚未完成轮次删除功能升级');
-    }
-
-    const existing = await db.reviewRoundExclusions
-      .where('[subjectId+roundNo+mistakeId]')
-      .equals([subjectId, normalizedRound, mistakeId])
-      .first();
-
-    if (!existing) {
-      await db.reviewRoundExclusions.add({
-        subjectId,
-        roundNo: normalizedRound,
-        mistakeId,
-        title,
-        removedAt: new Date(),
-      });
-    }
-
-    return { removed: !existing, roundNo: normalizedRound };
-  }
-
-  if (!db.reviewRoundItems) {
-    throw new Error('当前数据库尚未完成复习轮次初始化');
-  }
+  if (!db.reviewRoundItems) throw new Error('当前数据库尚未完成轮次表升级');
 
   const removedCount = await db.reviewRoundItems
     .where('[subjectId+roundNo+mistakeId]')
