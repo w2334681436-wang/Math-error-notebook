@@ -14,6 +14,7 @@ class Table {
   async bulkAdd(items) { for (const item of items) await this.add(item); }
   async add(item) { const id = this.nextId++; this.data.push({ ...item, id }); return id; }
   async clear() { this.data = []; }
+  async delete(id) { this.data = this.data.filter(row => row.id !== id); }
   async update(id, patch) {
     const found = this.data.find(item => item.id === id);
     if (found) Object.assign(found, patch);
@@ -29,6 +30,7 @@ class Table {
         };
         return {
           async first() { return table.data.find(query); },
+          async count() { return table.data.filter(query).length; },
           async delete() {
             const count = table.data.filter(query).length;
             table.data = table.data.filter(item => !query(item));
@@ -58,11 +60,13 @@ function mockDb({ mistakes = [], roundItems = [], exclusions = [] } = {}) {
   const tables = {
     mistakes: new Table(mistakes),
     reviewRoundItems: new Table(roundItems),
+    mistakeCards: new Table(mistakes.map(item => ({ id: item.id, title: item.title }))),
     reviewRoundExclusions: new Table(exclusions),
   };
   return {
     ...tables,
-    table(name) { return tables[name]; }
+    table(name) { return tables[name]; },
+    async transaction(_mode, ...args) { return args.at(-1)(); }
   };
 }
 
@@ -99,6 +103,21 @@ test('remove truly deletes membership record but preserves other rounds and orig
   assert.equal(db.reviewRoundExclusions.data.length, 0);
 });
 
+test('permanent removal of the last round also purges the underlying original and card', async () => {
+  const db = mockDb({
+    mistakes: [{ id: 19, subjectId: 1, title: '题19' }],
+    roundItems: [{ id: 1, subjectId: 1, roundNo: 1, mistakeId: 19, order: 1 }]
+  });
+  const result = await removeMistakeFromReviewRound(db, { subjectId: 1, roundNo: 1, mistakeId: 19 });
+  assert.equal(result.originalDeleted, true);
+  assert.equal(db.reviewRoundItems.data.length, 0);
+  assert.equal(db.mistakes.data.length, 0);
+  assert.equal(db.mistakeCards.data.length, 0);
+  // 已删除题号不会留下 importKey 造成下次导入被误判成重复。
+  const again = await db.mistakes.add({ subjectId: 1, importKey: 'MathNotebookMistakePack:math1-2023-19' });
+  assert.ok(again);
+});
+
 test('reimport adds a new first-round membership only when previously removed', async () => {
   const db = mockDb({ mistakes: [{ id: 5, subjectId: 1, title: '2023第17题' }] });
   const original = db.mistakes.data[0];
@@ -107,6 +126,8 @@ test('reimport adds a new first-round membership only when previously removed', 
   assert.equal(db.reviewRoundItems.data.length, 1);
   await removeMistakeFromReviewRound(db, { subjectId: 1, roundNo: 1, mistakeId: 5 });
   assert.equal(db.reviewRoundItems.data.length, 0);
-  assert.equal(await addFirstRoundMember(db, original), true);
+  assert.equal(db.mistakes.data.length, 0);
+  const newId = await db.mistakes.add({ subjectId: 1, title: original.title });
+  assert.equal(await addFirstRoundMember(db, { id: newId, subjectId: 1, title: original.title }), true);
   assert.equal(db.reviewRoundItems.data.length, 1);
 });
