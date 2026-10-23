@@ -2109,7 +2109,7 @@ const [aImages, setAImages] = useState(
           </div>
           {isQuestionPreviewMode ? (
             <div className="w-full p-4 bg-blue-50/40 border border-blue-100 rounded-xl min-h-[180px] prose prose-sm max-w-none overflow-x-auto">
-              {questionMarkdown.trim() ? <MarkdownView>{questionMarkdown}</MarkdownView> : <span className="text-gray-400 italic">暂无 Markdown 题目内容...</span>}
+              {questionMarkdown.trim() ? <MarkdownView assets={initialData?.questionAssets || {}}>{questionMarkdown}</MarkdownView> : <span className="text-gray-400 italic">暂无 Markdown 题目内容...</span>}
             </div>
           ) : (
             <textarea
@@ -2621,7 +2621,7 @@ function MistakeDetail({ mistake, reviewRoundNo, initialAddRelated = false, onRe
                 </div>
               ))}
             </div>
-            <div className="text-gray-700 text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100 prose-pre:text-gray-800 prose-code:text-gray-800 overflow-x-auto">
+            <div className="mistake-rich-analysis text-gray-700 leading-relaxed prose max-w-none overflow-x-auto">
               <MarkdownView assets={activeQuestion.analysisAssets || {}}>{activeQuestion.analysisText || '暂无文字解析'}</MarkdownView>
             </div>
           </div>
