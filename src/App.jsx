@@ -73,23 +73,19 @@ const APP_VERSION = `v${__APP_VERSION__}`;
 const normalizeMarkdownMath = (markdown = '') => {
   const source = String(markdown ?? '');
 
-  // 避免破坏 ```代码块``` 里的反斜杠
-  return source
-    .split(/(```[\s\S]*?```)/g)
-    .map(part => {
-      if (part.startsWith('```')) return part;
-
-      return part
-        // 把 \[ ... \] 转成 $$ ... $$
-        .replace(/\\\[([\s\S]*?)\\\]/g, (_, expr) => {
-          return `\n\n$$\n${expr.trim()}\n$$\n\n`;
-        })
-        // 把 \( ... \) 转成 $ ... $
-        .replace(/\\\(([^\n]*?)\\\)/g, (_, expr) => {
-          return `$${expr.trim()}$`;
-        });
-    })
-    .join('');
+  // remark-math only recognizes display delimiters reliably when they are on
+  // their own lines. Legacy AI packages put $$...$$ inside ordinary paragraphs
+  // and directly after punctuation, which exposed raw red LaTeX in the UI.
+  // Keep fenced code blocks literal and normalize both supported delimiters.
+  return source.split(/(```[\s\S]*?```)/g).map(part => {
+    if (part.startsWith('```')) return part;
+    return part
+      .replace(/\\\[([\s\S]*?)\\\]|\$\$([\s\S]*?)\$\$/g, (_match, brackets, dollars) => {
+        const expression = (brackets ?? dollars).trim();
+        return `\n\n$$\n${expression}\n$$\n\n`;
+      })
+      .replace(/\\\(([\s\S]*?)\\\)/g, (_match, expression) => `$${expression.trim()}$`);
+  }).join('');
 };
 
 function MarkdownView({ children, assets = {} }) {
