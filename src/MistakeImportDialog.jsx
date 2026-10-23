@@ -65,7 +65,7 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
               className="w-full flex items-center justify-center gap-2 rounded-xl p-4 border-2 border-dashed border-blue-200 bg-blue-50/40 text-blue-700 hover:bg-blue-50 text-sm font-bold">
               <UploadCloud size={20}/> {fileName || '点击选择 .merror / .json 错题包'}
             </button>
-            <p className="text-xs text-gray-500 mt-2">支持文字题干、Markdown、LaTeX、表格及内嵌静态图解；文件第1题最后显示，第末题最先显示。最多120道/24MB。</p>
+            <p className="text-xs text-gray-500 mt-2">支持文字题干、Markdown、LaTeX、原题截图、表格和图解。重新导入会恢复从第一轮移出的同一错题，保留原有修改和复盘。文件最后一题显示在列表最上方；最多120题/24MB。</p>
           </section>
           {pack && (
             <div className="border border-blue-100 bg-blue-50/40 rounded-xl p-3 text-sm">
@@ -77,12 +77,12 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
               </ol>
               {!result && <button type="button" onClick={commit} disabled={busy}
                 className="w-full mt-3 py-2.5 rounded-lg bg-blue-600 text-white font-bold disabled:opacity-60">
-                {busy ? '正在导入…' : '确认导入（自动修正重复题排序）'}
+                {busy ? '正在导入…' : '确认导入 / 恢复已移出的错题'}
               </button>}
             </div>
           )}
           {result && <p role="status" className="text-sm flex gap-2 items-center text-green-700 bg-green-50 rounded-xl p-3">
-            <CheckCircle2 size={18}/> 新增 {result.added} 道，已按文件顺序重排 {result.reordered} 道（原有解析、修改与掌握状态不变）。
+            <CheckCircle2 size={18}/> 新导入 {result.added} 道，恢复此前移出的 {result.restored} 道，原本就在列表中 {result.reordered} 道，补充原题截图 {result.thumbnailsAdded} 道。解析与复盘均保留。
           </p>}
           {error && <div role="alert" className="text-sm text-red-700 bg-red-50 rounded-xl p-3 flex items-start gap-2"><AlertTriangle size={18} className="shrink-0"/>{error}</div>}
           <section className="border-t border-gray-100 pt-4">
