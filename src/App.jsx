@@ -831,7 +831,7 @@ const handleImport = async (e) => {
 
       {showMistakeImportDialog && (
         <MistakeImportDialog subjectId={activeSubjectId} subjectName={subjects.find(s => String(s.id) === String(activeSubjectId))?.name || ''}
-          onClose={() => setShowMistakeImportDialog(false)} onImported={() => { setSelectedReviewRound(activeSubjectId, 1); notifyListContextChanged(activeSubjectId); setActiveTab('mistakes'); setMistakeView('list'); }} />
+          onClose={() => setShowMistakeImportDialog(false)} onImported={() => { writeMistakeListState(activeSubjectId, 1, { keyword: '', visibleLimit: MISTAKE_PAGE_SIZE, scrollTop: 0, anchorId: null, anchorOffset: 0 }); setSelectedReviewRound(activeSubjectId, 1); notifyListContextChanged(activeSubjectId); setActiveTab('mistakes'); setMistakeView('list'); }} />
       )}
       {showAiExportDialog && (
         <AiExportDialog
@@ -845,7 +845,7 @@ const handleImport = async (e) => {
 }
 
 function MistakeSystem({ subjectId, view, setView }) {
-  const [, setRevision] = useState(0);
+  const [revision, setRevision] = useState(0);
   useEffect(() => {
     const update = event => {
       const relevant = event.type === 'storage'
@@ -865,7 +865,7 @@ function MistakeSystem({ subjectId, view, setView }) {
   }, [subjectId, setView]);
   if (!subjectId) return <div className="p-10 text-center text-gray-400">正在加载科目...</div>;
   const roundNo = getSelectedReviewRound(subjectId);
-  return <MistakeWorkspace key={`${subjectId}:${roundNo}`} subjectId={subjectId} roundNo={roundNo} reversed={isMistakeListReversed(subjectId)} view={view} setView={setView}/>;
+  return <MistakeWorkspace key={`${subjectId}:${roundNo}:${revision}`} subjectId={subjectId} roundNo={roundNo} reversed={isMistakeListReversed(subjectId)} view={view} setView={setView}/>;
 }
 
 function MistakeWorkspace({ subjectId, roundNo, reversed, view, setView }) {
