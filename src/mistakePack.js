@@ -77,18 +77,27 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '') {
     throw new Error('错题包科目为「' + pack.subject + '」，当前选择的是「' + subjectName + '」，请先切换科目');
   }
   return db.transaction('rw', db.mistakes, db.mistakeCards, async () => {
-    const known = new Set();
+    const known = new Map();
     await db.mistakes.where('subjectId').equals(subjectId).each(item => {
-      if (item.importKey) known.add(item.importKey);
+      if (item.importKey) known.set(item.importKey, item.id);
     });
-    let added = 0, skipped = 0;
+    let added = 0, reordered = 0;
     const now = Date.now();
     for (let i = 0; i < pack.items.length; i++) {
       const item = pack.items[i];
       const importKey = MISTAKE_PACK_FORMAT + ':' + item.sourceId;
-      if (known.has(importKey)) { skipped++; continue; }
-      known.add(importKey);
-      const createdAt = new Date(now - i * 1000); // 默认倒序列表保持包内第1题排在最前
+      // 按文件顺序先后录入：越靠后的题创建时间越新，在默认倒序列表越靠上。
+      const createdAt = new Date(now - (pack.items.length - 1 - i) * 1000);
+      if (known.has(importKey)) {
+        // 用户若已导入旧包，再导入一次即可修正列表顺序。
+        // 只校准排序时间，完全保留原题、个人修改、复盘及掌握状态。
+        const id = known.get(importKey);
+        await db.mistakes.update(id, { createdAt });
+        const existing = await db.mistakes.get(id);
+        await db.mistakeCards.put(buildMistakeCard(existing));
+        reordered++;
+        continue;
+      }
       const record = {
         subjectId, importKey, title: item.title,
         questionMarkdown: item.questionMarkdown, questionAssets: item.questionAssets,
@@ -100,7 +109,8 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '') {
       const id = await db.mistakes.add(record);
       await db.mistakeCards.put(buildMistakeCard({ ...record, id }));
       added++;
+      known.set(importKey, id);
     }
-    return { added, skipped };
+    return { added, reordered };
   });
 }
