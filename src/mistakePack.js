@@ -59,10 +59,14 @@ export async function parseMistakePack(file) {
     const reflection = typeof raw.reflectionMarkdown === 'string' ? raw.reflectionMarkdown.slice(0, 100000) : '';
     const questionAssets = parseAssets(raw.questionAssets || [], '第' + (index + 1) + '题题干');
     const analysisAssets = parseAssets(raw.analysisAssets || [], '第' + (index + 1) + '题解析');
+    const questionThumbnailAssetId = typeof raw.questionThumbnailAssetId === 'string' ? raw.questionThumbnailAssetId : '';
+    if (questionThumbnailAssetId && !Object.prototype.hasOwnProperty.call(questionAssets, questionThumbnailAssetId)) {
+      throw new Error(title + '封面缩略图未附带');
+    }
     verifyReferences(questionMarkdown, questionAssets, title + '题干');
     verifyReferences(analysisText, analysisAssets, title + '解析');
     const tags = Array.isArray(raw.tags) ? raw.tags.filter(t => typeof t === 'string').slice(0, 15).map(t => t.slice(0, 48)) : [];
-    return { sourceId: key, title, questionMarkdown, analysisText, reflection, questionAssets, analysisAssets, tags };
+    return { sourceId: key, title, questionMarkdown, analysisText, reflection, questionAssets, analysisAssets, tags, questionThumbnailAssetId };
   });
   return { subject: typeof data.subject === 'string' ? data.subject.trim() : '', items };
 }
@@ -86,7 +90,7 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '') {
       const record = {
         subjectId, importKey, title: item.title,
         questionMarkdown: item.questionMarkdown, questionAssets: item.questionAssets,
-        questionImages: [], analysisText: item.analysisText, analysisAssets: item.analysisAssets,
+        questionImages: item.questionThumbnailAssetId ? [item.questionAssets[item.questionThumbnailAssetId]] : [], analysisText: item.analysisText, analysisAssets: item.analysisAssets,
         analysisImages: [], reflection: item.reflection, tags: item.tags,
         isMastered: false, reviewLogs: [], reviewCount: 0, reviewTimes: 0,
         createdAt, updatedAt: createdAt
