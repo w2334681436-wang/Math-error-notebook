@@ -106,6 +106,19 @@ db.version(7).stores({
   await migrateLegacyFirstRoundMembership(tx);
 });
 
+// v8: stage full-archive imports in the same IndexedDB database.
+// During validation, the live tables stay untouched. After validation a single
+// atomic transaction replaces the live records and removes staging rows.
+db.version(8).stores({
+  mistakes: '++id, title, createdAt, subjectId',
+  notes: '++id, parentId, title, type, *tags, order, [parentId+order]',
+  subjects: '++id, name',
+  mistakeCards: 'id, subjectId, createdAtMs, updatedAtMs, title, *tokens, [subjectId+createdAtMs]',
+  reviewRoundItems: '++id, subjectId, roundNo, mistakeId, order, decidedAt, [subjectId+roundNo+order], [subjectId+roundNo+mistakeId]',
+  reviewRoundExclusions: '++id, subjectId, roundNo, mistakeId, removedAt, [subjectId+roundNo], [subjectId+roundNo+mistakeId]',
+  restoreStaging: '++id, table'
+});
+
 function sanitizeMistakeRecord(record) {
   if (!record || typeof record !== 'object') return record;
   const copy = { ...record };
