@@ -18,6 +18,21 @@ const hashString = (s, start) => {
 const nextFrame = () => new Promise(resolve => setTimeout(resolve, 0));
 const pad = n => n.toString(16).padStart(8, '0');
 
+function captureSettings() {
+  const settings = {};
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return settings;
+    for (let i = 0; i < storage.length; i++) {
+      const key = storage.key(i);
+      if (!key?.startsWith('mathNotebook.') || ['mathNotebook.pendingOpenMistake', 'mathNotebook.activeMistakeId'].includes(key)) continue;
+      const value = storage.getItem(key);
+      if (typeof value === 'string' && value.length < 250000) settings[key] = value;
+    }
+  } catch { /* browser may have restricted preference storage */ }
+  return settings;
+}
+
 async function getCounts(db) {
   const values = await Promise.all(TABLES.map(name => db[name].count()));
   return Object.fromEntries(TABLES.map((name, index) => [name, values[index]]));
@@ -26,7 +41,7 @@ async function getCounts(db) {
 async function* generateBackup(db, counts, onProgress) {
   const metadata = {
     format: FORMAT, version: VERSION, firstRoundMembershipExplicit: true,
-    createdAt: new Date().toISOString(), counts
+    createdAt: new Date().toISOString(), counts, settings: captureSettings()
   };
   yield encoder.encode(JSON.stringify(metadata) + '\n');
   let hash = 2166136261;
@@ -300,7 +315,7 @@ export async function restoreCompleteBackup(db, file, onProgress = () => {}) {
       if (meta.firstRoundMembershipExplicit !== true) await migrateLegacyFirstRoundMembership(db);
       await stage.clear();
     });
-    return { counts, filename: file.name };
+    return { counts, filename: file.name, settings: meta.settings || {} };
   } catch (error) {
     // Failed validation or a rolled-back commit must not keep temporary copies.
     try { await stage.clear(); } catch { /* quota or device failure */ }
