@@ -608,6 +608,15 @@ const handleImport = async (e) => {
       : await importOldJsonBackup(file);
     const imported = result.counts || result;
     clearMistakeNavigationState();
+    // Restore per-subject selected round, list order and saved learning position
+    // only after the full database has been successfully committed.
+    if (result.settings && typeof result.settings === 'object') {
+      for (const [key, value] of Object.entries(result.settings)) {
+        if (key.startsWith('mathNotebook.') && typeof value === 'string') {
+          try { localStorage.setItem(key, value); } catch { /* storage blocked */ }
+        }
+      }
+    }
 
     alert(
       `✅ 数据导入成功！页面将自动刷新。\n\n` +
