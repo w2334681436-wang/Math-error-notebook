@@ -9,7 +9,7 @@ const TABLES = ['subjects', 'notes', 'mistakes', 'mistakeCards', 'reviewRoundIte
 const SET = new Set(TABLES);
 const encoder = new TextEncoder();
 const BATCH = 4;
-const MAX_ROW = 48 * 1024 * 1024;
+const MAX_ROW = 256 * 1024 * 1024;
 const hashString = (s, start) => {
   let h = start >>> 0;
   for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0;
@@ -36,7 +36,7 @@ async function* generateBackup(db, counts, onProgress) {
     let lastId = null;
     while (true) {
       const collection = db[table].orderBy(':id');
-      const rows = await (lastId === null ? collection : collection.above(lastId)).limit(BATCH).toArray();
+      const rows = await (lastId === null ? collection : db[table].where('id').above(lastId)).limit(BATCH).toArray();
       if (!rows.length) break;
       for (const record of rows) {
         const line = JSON.stringify({ table, record }) + '\n';
@@ -58,11 +58,7 @@ async function* generateBackup(db, counts, onProgress) {
   onProgress({ stage: 'ready', completed: total, total });
 }
 
-async function downloadWithSavePicker(iterator, filename) {
-  const handle = await window.showSaveFilePicker({
-    suggestedName: filename,
-    types: [{ description: '错题本完整备份', accept: { 'application/octet-stream': ['.mathbackup'] } }]
-  });
+async function downloadWithSavePicker(iterator, handle) {
   const writable = await handle.createWritable();
   try {
     for await (const chunk of iterator) await writable.write(chunk);
@@ -151,11 +147,17 @@ async function downloadViaServiceWorker(iterator, filename) {
 }
 
 export async function exportCompleteBackup(db, onProgress = () => {}) {
-  const counts = await getCounts(db);
   const filename = 'MathNotebook_All_' + new Date().toISOString().slice(0, 10) + '.mathbackup';
+  // Saving must be requested while the click still has user activation.
+  const picker = typeof window.showSaveFilePicker === 'function'
+    ? window.showSaveFilePicker({
+      suggestedName: filename,
+      types: [{ description: '错题本完整备份', accept: { 'application/octet-stream': ['.mathbackup'] } }]
+    }) : null;
+  const counts = await getCounts(db);
   const iterator = generateBackup(db, counts, onProgress)[Symbol.asyncIterator]();
-  if (typeof window.showSaveFilePicker === 'function') {
-    await downloadWithSavePicker({ [Symbol.asyncIterator]: () => iterator }, filename);
+  if (picker) {
+    await downloadWithSavePicker({ [Symbol.asyncIterator]: () => iterator }, await picker);
   } else {
     await downloadViaServiceWorker(iterator, filename);
   }
@@ -177,7 +179,7 @@ async function readLines(file, onLine, onProgress) {
         const tail = text.slice(index);
         fragments.push(tail);
         length += tail.length;
-        if (length > MAX_ROW) throw new Error('备份中的单条记录过大（超过48MB），请检查图片尺寸');
+        if (length > MAX_ROW) throw new Error('单条记录超过256MB，建议先压缩这一题的原始超大图片');
         break;
       }
       fragments.push(text.slice(index, end));
@@ -262,7 +264,7 @@ export async function restoreCompleteBackup(db, file, onProgress = () => {}) {
       const rebuilt = [];
       while (true) {
         const collection = stage.orderBy(':id');
-        const rows = await (last == null ? collection : collection.above(last)).limit(BATCH).toArray();
+        const rows = await (last == null ? collection : stage.where('id').above(last)).limit(BATCH).toArray();
         if (!rows.length) break;
         for (const entry of rows) {
           const restored = { ...entry.record };
