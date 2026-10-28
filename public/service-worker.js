@@ -78,11 +78,86 @@ async function handleLocalAsset(request) {
   return response;
 }
 
+
+// Download bridge: the page generates backup records on demand. The service
+// worker streams them directly to the browser download without building a
+// multi-hundred-megabyte Blob in page memory.
+const backupSessions = new Map();
+const BACKUP_PATH = '/__mathbackup_download__/';
+self.addEventListener('message', event => {
+  if (event.data?.type !== 'BACKUP_DOWNLOAD_REGISTER') return;
+  const { id, filename } = event.data;
+  const port = event.ports?.[0];
+  if (!port || typeof id !== 'string' || !/^[\w-]{6,120}$/.test(id)) return;
+  if (backupSessions.size > 4) return;
+  backupSessions.set(id, { port, filename: String(filename || 'MathNotebook.mathbackup') });
+  port.postMessage({ type: 'registered' });
+});
+
+function backupDownloadResponse(token) {
+  const session = backupSessions.get(token);
+  if (!session) return new Response('备份下载链接已失效，请返回错题本重新导出。', { status: 404 });
+  backupSessions.delete(token);
+  const port = session.port;
+  let ended = false;
+  const stream = new ReadableStream({
+    pull(controller) {
+      if (ended) return;
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          ended = true;
+          controller.error(new Error('备份传输超时'));
+          reject(new Error('备份传输超时'));
+          port.close();
+        }, 90000);
+        port.onmessage = event => {
+          clearTimeout(timeout);
+          const item = event.data || {};
+          if (item.type === 'chunk' && item.bytes instanceof ArrayBuffer) {
+            controller.enqueue(new Uint8Array(item.bytes));
+            resolve();
+          } else if (item.type === 'end') {
+            ended = true;
+            controller.close();
+            resolve();
+            port.close();
+          } else {
+            ended = true;
+            controller.error(new Error(item.error || '备份传输失败'));
+            reject(new Error(item.error || '备份传输失败'));
+            port.close();
+          }
+        };
+        port.postMessage({ type: 'pull' });
+      });
+    },
+    cancel() {
+      ended = true;
+      port.postMessage({ type: 'cancel' });
+      port.close();
+    }
+  }, { highWaterMark: 0 });
+  const filename = session.filename.replace(/[^a-zA-Z0-9_.-]/g, '_');
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': 'attachment; filename="' + filename + '"',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff'
+    }
+  });
+}
+
 self.addEventListener('fetch', event => {
   const { request } = event;
   if (request.method !== 'GET') return;
 
   const url = new URL(request.url);
+  if (url.origin === self.location.origin && url.pathname.includes(BACKUP_PATH)) {
+    const token = decodeURIComponent(url.pathname.split(BACKUP_PATH).pop());
+    event.respondWith(backupDownloadResponse(token));
+    return;
+  }
   if (request.mode === 'navigate') {
     event.respondWith(handleNavigation(request, event));
     return;
