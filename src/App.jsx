@@ -4,6 +4,7 @@ import Dexie from 'dexie';
 import { LIST_CONTEXT_EVENT, readMistakeListState, writeMistakeListState, notifyListContextChanged, clearMistakeNavigationState } from './mistakeListState';
 import { toggleNextRound, toggleMastered as toggleReviewMastered } from './reviewRoundsPatch';
 import { db } from './db';
+import { exportCompleteBackup, restoreCompleteBackup } from './fullBackup';
 import { addFirstRoundMember, migrateLegacyFirstRoundMembership } from './firstRoundMembership';
 import {
   MISTAKE_PAGE_SIZE,
@@ -152,6 +153,8 @@ const cloneNodeRecursive = async (nodeId, newParentId) => {
 function App() {
   const [activeTab, setActiveTab] = useState('mistakes'); 
   const [aiExportProgress, setAiExportProgress] = useState(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupProgress, setBackupProgress] = useState(null);
   const [showAiExportDialog, setShowAiExportDialog] = useState(false);
   const [showMistakeImportDialog, setShowMistakeImportDialog] = useState(false);
   const [importRefreshCounter, setImportRefreshCounter] = useState(0);
@@ -237,91 +240,29 @@ setActiveSubjectId(id); // 自动切换到新科目
   };
 
   // [新增] 导出备份数据
- // [增强版] 大数据安全导出：NDJSON 分行备份，避免 Invalid string length
-const handleExport = async () => {
-  try {
-    const createdAt = new Date().toISOString();
-
-    const counts = {
-      mistakes: await db.mistakes.count(),
-      relatedQuestions: 0,
-      notes: await db.notes.count(),
-      subjects: await db.subjects.count(),
-      reviewRoundItems: await db.reviewRoundItems.count(),
-      reviewRoundExclusions: await db.reviewRoundExclusions.count()
-    };
-
-    await db.mistakes.each(record => {
-      counts.relatedQuestions += Array.isArray(record.relatedQuestions) ? record.relatedQuestions.length : 0;
-    });
-
-    const parts = [];
-
-    const pushLine = (obj) => {
-      parts.push(JSON.stringify(obj), '\n');
-    };
-
-    // 第一行是备份元信息
-    pushLine({
-      format: 'MathNotebookBackupNDJSON',
-      version: 5,
-      firstRoundMembershipExplicit: true,
-      appVersion: APP_VERSION,
-      createdAt,
-      counts
-    });
-
-    // 分表逐条导出：不要把所有数据拼成一个超级 JSON 字符串
-    await db.subjects.each(record => {
-      pushLine({ table: 'subjects', record });
-    });
-
-    await db.notes.each(record => {
-      pushLine({ table: 'notes', record });
-    });
-
-    await db.mistakes.each(record => {
-      pushLine({ table: 'mistakes', record });
-    });
-
-    await db.reviewRoundItems.each(record => {
-      pushLine({ table: 'reviewRoundItems', record });
-    });
-
-    await db.reviewRoundExclusions.each(record => {
-      pushLine({ table: 'reviewRoundExclusions', record });
-    });
-
-    const blob = new Blob(parts, {
-      type: 'application/x-ndjson;charset=utf-8'
-    });
-
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-
-    link.href = url;
-    link.download = `MathNotebook_Backup_${createdAt.slice(0, 10)}.mathbackup`;
-
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-
-    URL.revokeObjectURL(url);
-
-    alert(
-      `✅ 导出成功\n\n` +
-      `错题：${counts.mistakes} 条\n` +
-      `举一反三相关题：${counts.relatedQuestions} 条\n` +
-      `笔记：${counts.notes} 条\n` +
-      `科目：${counts.subjects} 个\n` +
-      `轮次题目：${counts.reviewRoundItems} 条\n` +
-      `本轮移出记录：${counts.reviewRoundExclusions} 条`
-    );
-  } catch (error) {
-    console.error(error);
-    alert('导出失败: ' + error.message);
-  }
-};
+ // 流式全量备份：不把所有带图错题在内存中拼成一个大 Blob。
+ const handleExport = async () => {
+   if (backupBusy) return;
+   setBackupBusy(true);
+   setBackupProgress({ stage: 'preparing', completed: 0, total: 0 });
+   try {
+     const result = await exportCompleteBackup(db, setBackupProgress);
+     alert('✅ 完整备份数据已发送至下载：' + result.filename + '\n'
+       + '错题：' + result.counts.mistakes + ' 条\n'
+       + '笔记：' + result.counts.notes + ' 条\n'
+       + '轮次题目：' + result.counts.reviewRoundItems + ' 条\n'
+       + '包括题目截图、解析图片、图文笔记和复盘记录。请到系统下载文件夹确认文件已保存。');
+   } catch (error) {
+     if (error?.name !== 'AbortError') {
+       console.error('完整备份导出失败', error);
+       alert('❌ 完整备份导出失败：' + (error?.message || error)
+         + '\n现有错题与复盘记录未被修改。请检查下载权限和设备剩余空间。');
+     }
+   } finally {
+     setBackupProgress(null);
+     setBackupBusy(false);
+   }
+ };
 
 // 逐行读取 .mathbackup 文件
 const readNdjsonBackup = async (file, onLineObject) => {
@@ -660,19 +601,22 @@ const handleImport = async (e) => {
 
     let firstObj;
     try { firstObj = JSON.parse(firstLine); } catch { /* 多行旧 JSON 的第一行不是完整对象。 */ }
+    setBackupBusy(true);
+    setBackupProgress({ stage: 'validate', completed: 0, total: file.size });
     const result = firstObj?.format === 'MathNotebookBackupNDJSON'
-      ? await importNdjsonBackup(file)
+      ? await restoreCompleteBackup(db, file, setBackupProgress)
       : await importOldJsonBackup(file);
+    const imported = result.counts || result;
     clearMistakeNavigationState();
 
     alert(
       `✅ 数据导入成功！页面将自动刷新。\n\n` +
-      `错题：${result.mistakes} 条\n` +
-      `举一反三相关题：${result.relatedQuestions || 0} 条\n` +
-      `笔记：${result.notes} 条\n` +
-      `科目：${result.subjects} 个\n` +
-      `轮次题目：${result.reviewRoundItems || 0} 条\n` +
-      `本轮移出记录：${result.reviewRoundExclusions || 0} 条`
+      `错题：${imported.mistakes} 条\n` +
+      `题目图片与解析：已随题目一并恢复\n` +
+      `笔记：${imported.notes} 条\n` +
+      `科目：${imported.subjects} 个\n` +
+      `轮次题目：${imported.reviewRoundItems || 0} 条\n` +
+      `本轮移出记录：${imported.reviewRoundExclusions || 0} 条`
     );
 
     window.location.reload();
@@ -680,6 +624,8 @@ const handleImport = async (e) => {
     console.error(error);
     alert('❌ 导入失败: ' + error.message);
   } finally {
+    setBackupProgress(null);
+    setBackupBusy(false);
     e.target.value = '';
   }
 };
@@ -787,16 +733,22 @@ const handleImport = async (e) => {
             </span>
           </button>
 
-          <button onClick={handleExport} className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0" title="导出备份">
+          <button onClick={handleExport} disabled={backupBusy} className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0 disabled:opacity-40" title="流式导出所有科目、错题图片、解析和图文笔记为可恢复的 .mathbackup">
             <Download size={20} />
           </button>
 
-          <label className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0 cursor-pointer" title="导入备份">
+          <label className={cn("p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0 cursor-pointer", backupBusy && "opacity-40 pointer-events-none")} title="选择 .mathbackup 一键导入完整数据库">
             <UploadCloud size={20} />
             {/* 隐藏的文件输入框，选中文件后立即触发 handleImport */}
            <input type="file" accept=".json,.mathbackup,application/json" onChange={handleImport} className="hidden" />
           </label>
 
+          {backupProgress && (
+            <span role="status" aria-live="polite" className="max-w-40 truncate text-[11px] font-semibold text-blue-700">
+              {backupProgress.stage === 'commit' ? '恢复中' : backupProgress.stage === 'validate' ? '验证中' : backupProgress.stage === 'ready' ? '下载收尾' : '备份中'}
+              {' '} {backupProgress.total ? Math.min(100, Math.floor(100 * backupProgress.completed / backupProgress.total)) : 0}%
+            </span>
+          )}
           <div className="w-[1px] h-4 bg-gray-200 mx-1"></div>
 
           <button onClick={toggleFullScreen} className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0" title="全屏">
