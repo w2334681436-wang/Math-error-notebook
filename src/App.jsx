@@ -4,6 +4,7 @@ import Dexie from 'dexie';
 import { LIST_CONTEXT_EVENT, readMistakeListState, writeMistakeListState, notifyListContextChanged, clearMistakeNavigationState } from './mistakeListState';
 import { toggleNextRound, toggleMastered as toggleReviewMastered } from './reviewRoundsPatch';
 import { db } from './db';
+import ImmersiveNoteReader from './ImmersiveNoteReader';
 import { exportCompleteBackup, restoreCompleteBackup } from './fullBackup';
 import { addFirstRoundMember, migrateLegacyFirstRoundMembership } from './firstRoundMembership';
 import {
@@ -1062,7 +1063,8 @@ function NoteSystem() {
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(true); 
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false); 
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true); 
   const [clipboard, setClipboard] = useState({ items: [], mode: 'copy' });
   const [aiPromptCopied, setAiPromptCopied] = useState(false);
 
@@ -1265,13 +1267,14 @@ function NoteSystem() {
 
   return (
     <div className="flex h-full bg-white">
-      <div className={cn("bg-gray-50 border-r border-gray-200 flex flex-col transition-all duration-300 absolute md:relative z-20 h-full shadow-lg md:shadow-none", !mobileMenuOpen && "-translate-x-full md:translate-x-0", isSidebarExpanded ? "w-96" : "w-64")}>
-        <div className="p-3 border-b border-gray-200 flex gap-2 items-center">
+      <div className={cn("bg-gray-50 border-r border-gray-200 flex flex-col transition-all duration-300 absolute md:relative z-20 h-full shadow-lg md:shadow-none", !mobileMenuOpen && "-translate-x-full md:translate-x-0", isSidebarOpen ? (isSidebarExpanded ? "w-96" : "w-64") : "w-64 md:w-12")}>
+        {!isSidebarOpen && <button type="button" onClick={() => setIsSidebarOpen(true)} title="展开左侧目录" aria-label="展开左侧目录" className="hidden md:flex w-9 h-9 mt-3 mx-auto items-center justify-center rounded-lg text-gray-600 hover:text-indigo-600 hover:bg-indigo-50"><PanelLeftOpen size={19}/></button>}
+        <div className={cn("p-3 border-b border-gray-200 flex gap-2 items-center", !isSidebarOpen && "md:hidden")}>
           <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full text-xs bg-white border rounded px-2 py-1.5 focus:outline-blue-500" placeholder="搜索..." />
-          <button onClick={() => setIsSidebarExpanded(!isSidebarExpanded)} className="hidden md:flex p-1.5 hover:bg-gray-200 rounded text-gray-500 transition"><PanelLeftClose size={16}/></button>
+          <button onClick={() => setIsSidebarOpen(false)} title="收起左侧目录" aria-label="收起左侧目录" className="hidden md:flex p-1.5 hover:bg-gray-200 rounded text-gray-500 transition"><PanelLeftClose size={16}/></button>
           <button onClick={() => setMobileMenuOpen(false)} className="md:hidden"><X size={16}/></button>
         </div>
-        <div className="flex-1 overflow-y-auto overflow-x-auto p-2">
+        <div className={cn("flex-1 overflow-y-auto overflow-x-auto p-2", !isSidebarOpen && "md:hidden")}>
           {searchTerm ? (
             <div className="space-y-1 min-w-max">
               {filteredNotes.map(note => (
@@ -1292,7 +1295,7 @@ function NoteSystem() {
             </DndContext>
           )}
         </div>
-        <div className="p-3 border-t border-gray-200 shrink-0 bg-gray-50 space-y-2">
+        <div className={cn("p-3 border-t border-gray-200 shrink-0 bg-gray-50 space-y-2", !isSidebarOpen && "md:hidden")}>
           <label className="flex items-center justify-center gap-2 w-full border border-indigo-200 bg-indigo-50 text-indigo-700 rounded py-2.5 text-xs font-bold hover:bg-indigo-100 cursor-pointer">
             <UploadCloud size={15}/> 导入图文笔记（单篇/合集）
             <input type="file" accept=".knote,.md,application/json,text/markdown" onChange={handleRichNoteImport} className="hidden"/>
@@ -1316,7 +1319,7 @@ function NoteSystem() {
         </div>
       </div>
 
-      <div className="flex-1 h-full overflow-hidden flex flex-col relative bg-white">
+      <div className="flex-1 min-w-0 h-full overflow-hidden flex flex-col relative bg-white">
         {!mobileMenuOpen && (<button onClick={() => setMobileMenuOpen(true)} className="absolute top-4 left-4 z-10 p-2 bg-white shadow-md border rounded-full md:hidden"><ChevronRightIcon size={20} /></button>)}
 
         {selectedNode ? (
@@ -1698,6 +1701,30 @@ function NoteEditor({ nodeId, onBack, onNavigate, onExport }) {
   // [新增] 文本编辑相关状态
   const [text, setText] = useState('');
   const [isPreview, setIsPreview] = useState(true); // 默认开启预览模式，方便查看
+  const [immersiveOpen, setImmersiveOpen] = useState(false);
+  const readerOwnedFullscreen = useRef(false);
+  const closeImmersive = useCallback((exitNative = true) => {
+    setImmersiveOpen(false);
+    if (exitNative && readerOwnedFullscreen.current && document.fullscreenElement && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
+    }
+    readerOwnedFullscreen.current = false;
+  }, []);
+  const openImmersive = () => {
+    db.notes.update(nodeId, { text });
+    setIsPreview(true);
+    setImmersiveOpen(true);
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+      readerOwnedFullscreen.current = true;
+      document.documentElement.requestFullscreen().catch(() => { readerOwnedFullscreen.current = false; });
+    }
+  };
+  useEffect(() => () => {
+    if (readerOwnedFullscreen.current && document.fullscreenElement && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
+    }
+    readerOwnedFullscreen.current = false;
+  }, []);
 
   const siblings = useLiveQuery(async () => {
     if (!note) return [];
@@ -1789,6 +1816,10 @@ function NoteEditor({ nodeId, onBack, onNavigate, onExport }) {
                <div className="flex bg-gray-100 p-1 rounded-lg text-xs font-bold">
                   <button onClick={() => setIsPreview(false)} className={cn("px-3 py-1 rounded-md transition-all", !isPreview ? "bg-white shadow text-blue-600" : "text-gray-500")}>编辑</button>
                   <button onClick={() => { setIsPreview(true); handleTextSave(); }} className={cn("px-3 py-1 rounded-md transition-all", isPreview ? "bg-white shadow text-blue-600" : "text-gray-500")}>预览</button>
+                  <button type="button" onClick={openImmersive} title="沉浸式全屏阅读（Esc退出）" aria-label="沉浸式全屏阅读"
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition">
+                    <Maximize size={15}/><span className="hidden sm:inline">沉浸阅读</span>
+                  </button>
                </div>
             </div>
 
@@ -1832,6 +1863,19 @@ function NoteEditor({ nodeId, onBack, onNavigate, onExport }) {
          </div>
          <div className="h-20"></div>
       </div>
+      {immersiveOpen && (
+        <ImmersiveNoteReader
+          noteId={nodeId}
+          title={note.title}
+          body={text ? <MarkdownView assets={note.assets || {}}>{text}</MarkdownView> : <p className="text-gray-400">此笔记暂无正文，请退出阅读后编辑。</p>}
+          images={note.content || []}
+          prevId={prevId}
+          nextId={nextId}
+          onNavigate={onNavigate}
+          onClose={closeImmersive}
+          nativeFullscreenRef={readerOwnedFullscreen}
+        />
+      )}
     </div>
   );
 }
