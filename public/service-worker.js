@@ -46,20 +46,18 @@ self.addEventListener('activate', event => {
 
 async function handleNavigation(request, event) {
   const cache = await caches.open(CACHE_NAME);
-  const cachedDocument = await cache.match(OFFLINE_DOCUMENT);
-  const networkRequest = fetch(request).then(async response => {
-    if (canCache(response)) await cache.put(OFFLINE_DOCUMENT, response.clone());
-    return response;
-  });
 
-  if (cachedDocument) {
-    event.waitUntil(networkRequest.catch(() => undefined));
-    return cachedDocument;
-  }
-
+  // Network-first navigation prevents an old offline index.html from hiding
+  // freshly deployed Vercel builds. Cached HTML remains the offline fallback.
   try {
-    return await networkRequest;
+    const response = await fetch(request, { cache: 'no-store' });
+    if (canCache(response)) {
+      event.waitUntil(cache.put(OFFLINE_DOCUMENT, response.clone()));
+    }
+    return response;
   } catch {
+    const cachedDocument = await cache.match(OFFLINE_DOCUMENT);
+    if (cachedDocument) return cachedDocument;
     return new Response(
       '<!doctype html><meta charset="utf-8"><title>错题本</title><style>body{font-family:system-ui;padding:32px;color:#334155}h1{font-size:22px}</style><h1>离线资源尚未准备完成</h1><p>请联网打开一次错题本，等待“离线版已准备完成”提示后再断网使用。</p>',
       { headers: { 'Content-Type': 'text/html; charset=utf-8' }, status: 503 },
