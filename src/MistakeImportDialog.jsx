@@ -80,7 +80,7 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
               {!result && <label className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-slate-700 cursor-pointer">
                 <input type="checkbox" checked={replaceExistingAnalysis} onChange={e => setReplaceExistingAnalysis(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 accent-blue-600" />
                 <span><strong>更新同题已有的 AI 解析</strong>（修复旧版公式或更新讲解）。默认不勾选以保护手工修改；勾选后只替换解析文字和解析图解，保留个人复盘、题目截图、熟练度和复盘次数。</span>
-              </label>
+              </label>}
               {!result && <label className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-slate-700 cursor-pointer">
                 <input type="checkbox" checked={replaceExistingQuestionImages} onChange={e => setReplaceExistingQuestionImages(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 accent-blue-600" />
                 <span><strong>更新同题题目截图及题干</strong>（修复旧版截断、跨页题图）。仅勾选时才用文件里的全部题目图片和题干替换现有版本；未勾选时保留已有题图。个人复盘、掌握状态及答题历史不受影响。</span>
