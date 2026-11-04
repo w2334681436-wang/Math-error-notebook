@@ -1,6 +1,7 @@
 // 独立的错题增量导入协议；绝不清空或替换现有数据。
 import { buildMistakeCard } from './searchIndex';
 import { addFirstRoundMember } from './firstRoundMembership';
+import { getImportedQuestionImages } from './mistakePackImages';
 
 export const MISTAKE_PACK_FORMAT = 'MathNotebookMistakePack';
 const MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
@@ -84,11 +85,12 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '', opti
       if (record.importKey) known.set(record.importKey, record.id);
     });
 
-    let added = 0, restored = 0, reordered = 0, thumbnailsAdded = 0, analysisUpdated = 0;
+    let added = 0, restored = 0, reordered = 0, thumbnailsAdded = 0, analysisUpdated = 0, questionImagesUpdated = 0;
     const now = Date.now();
     for (let i = 0; i < pack.items.length; i++) {
       const item = pack.items[i];
       const importKey = MISTAKE_PACK_FORMAT + ':' + item.sourceId;
+      const importedImages = getImportedQuestionImages(item);
       // 文件中先出现的题先导入，列表默认按 createdAt 倒序，因此末题显示在最上面。
       const createdAt = new Date(now - (pack.items.length - 1 - i) * 1000);
       const existingId = known.get(importKey);
@@ -105,20 +107,26 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '', opti
         // personal reflections, mastery, history, or the existing question.
         if (options.replaceExistingAnalysis === true) {
           updates.analysisText = item.analysisText;
-          updates.analysisAssets = { ...(prior.analysisAssets || {}), ...item.analysisAssets };
+          updates.analysisAssets = item.analysisAssets; // 更新 AI 图解时一并清除旧版重复截图资源
           updates.updatedAt = new Date();
           analysisUpdated++;
         }
-        // 兼容旧AI包导入时没有题目截图：只有缺图才从新包补齐，保留用户已有截图。
+        // 旧题默认保留原题截图；用户单独勾选时才以完整题图列表替换旧版不完整题图。
         const pictures = Array.isArray(prior.questionImages) ? prior.questionImages.filter(Boolean) : [];
         const hasPicture = pictures.length > 0 || Boolean(prior.questionImg);
-        if (!hasPicture && item.questionThumbnailAssetId) {
-          const image = item.questionAssets[item.questionThumbnailAssetId];
-          if (image) {
-            updates.questionImages = [image];
-            updates.questionAssets = { ...(prior.questionAssets || {}), ...item.questionAssets };
-            thumbnailsAdded++;
-          }
+        if (options.replaceExistingQuestionImages === true && importedImages.length > 0) {
+          updates.questionImages = importedImages;
+          updates.questionImg = importedImages[0];
+          updates.questionAssets = item.questionAssets;
+          updates.questionMarkdown = item.questionMarkdown;
+          updates.updatedAt = new Date();
+          questionImagesUpdated++;
+        } else if (!hasPicture && importedImages.length > 0) {
+          // 完全没有旧题图时，自动补齐所有截图，而不是只补封面一张。
+          updates.questionImages = importedImages;
+          updates.questionImg = importedImages[0];
+          updates.questionAssets = item.questionAssets;
+          thumbnailsAdded++;
         }
         await db.mistakes.update(existingId, updates);
         await db.mistakeCards.put(buildMistakeCard({ ...prior, ...updates }));
@@ -131,7 +139,8 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '', opti
       const record = {
         subjectId, importKey, title: item.title,
         questionMarkdown: item.questionMarkdown, questionAssets: item.questionAssets,
-        questionImages: item.questionThumbnailAssetId ? [item.questionAssets[item.questionThumbnailAssetId]] : [],
+        questionImages: importedImages,
+        questionImg: importedImages[0] || null,
         analysisText: item.analysisText, analysisAssets: item.analysisAssets,
         analysisImages: [], reflection: item.reflection, tags: item.tags,
         isMastered: false, reviewLogs: [], reviewCount: 0, reviewTimes: 0,
@@ -143,6 +152,6 @@ export async function addMistakePack(db, pack, subjectId, subjectName = '', opti
       added++;
       known.set(importKey, id);
     }
-    return { added, restored, reordered, thumbnailsAdded, analysisUpdated };
+    return { added, restored, reordered, thumbnailsAdded, analysisUpdated, questionImagesUpdated };
   });
 }

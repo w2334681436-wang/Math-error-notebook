@@ -13,6 +13,7 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
   const [result, setResult] = useState(null);
   const [copied, setCopied] = useState(false);
   const [replaceExistingAnalysis, setReplaceExistingAnalysis] = useState(false);
+  const [replaceExistingQuestionImages, setReplaceExistingQuestionImages] = useState(false);
 
   const load = async (file) => {
     setError(''); setResult(null); setPack(null); setFileName(file?.name || '');
@@ -41,7 +42,7 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
     if (!pack || busy) return;
     setBusy(true); setError('');
     try {
-      const result = await addMistakePack(db, pack, subjectId, subjectName, { replaceExistingAnalysis });
+      const result = await addMistakePack(db, pack, subjectId, subjectName, { replaceExistingAnalysis, replaceExistingQuestionImages });
       setResult(result);
       onImported?.(result);
     } catch (e) { setError(e.message || '导入失败'); }
@@ -66,19 +67,23 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
               className="w-full flex items-center justify-center gap-2 rounded-xl p-4 border-2 border-dashed border-blue-200 bg-blue-50/40 text-blue-700 hover:bg-blue-50 text-sm font-bold">
               <UploadCloud size={20}/> {fileName || '点击选择 .merror / .json 错题包'}
             </button>
-            <p className="text-xs text-gray-500 mt-2">支持文字题干、Markdown、LaTeX、原题截图、表格和图解。重新导入时：原题已被彻底删除则新增；原题仍在其他轮次则重新创建第一轮成员，原有编辑与复盘不变。文件最后一题显示在列表最上方；最多120题/24MB。</p>
+            <p className="text-xs text-gray-500 mt-2">支持文字题干、Markdown、LaTeX、每题多张原题截图（包括跨页）、表格和图解。重新导入时：原题已被彻底删除则新增；原题仍在其他轮次则重新创建第一轮成员，原有编辑与复盘不变。文件最后一题显示在列表最上方；最多120题/24MB。</p>
           </section>
           {pack && (
             <div className="border border-blue-100 bg-blue-50/40 rounded-xl p-3 text-sm">
-              <p className="font-bold mb-1">校验完成：{pack.items.length}道</p>
+              <p className="font-bold mb-1">校验完成：{pack.items.length}道 · 题目图片 {pack.items.reduce((n, item) => n + Object.keys(item.questionAssets || {}).length, 0)} 张</p>
               <p className="text-xs text-blue-700">预计列表从上到下（最后导入的题排最前）：</p>
               <p className="text-xs text-gray-500">文件学科：{pack.subject || '未指定'} · 导入学科：{subjectName || '当前'}</p>
               <ol className="max-h-32 overflow-y-auto list-decimal pl-5 text-xs mt-2 space-y-1">
-                {[...pack.items].reverse().map(item => <li key={item.sourceId}>{item.title}</li>)}
+                {[...pack.items].reverse().map(item => <li key={item.sourceId}>{item.title}（题图 {Object.keys(item.questionAssets || {}).length} 张）</li>)}
               </ol>
               {!result && <label className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-slate-700 cursor-pointer">
                 <input type="checkbox" checked={replaceExistingAnalysis} onChange={e => setReplaceExistingAnalysis(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 accent-blue-600" />
                 <span><strong>更新同题已有的 AI 解析</strong>（修复旧版公式或更新讲解）。默认不勾选以保护手工修改；勾选后只替换解析文字和解析图解，保留个人复盘、题目截图、熟练度和复盘次数。</span>
+              </label>
+              {!result && <label className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-slate-700 cursor-pointer">
+                <input type="checkbox" checked={replaceExistingQuestionImages} onChange={e => setReplaceExistingQuestionImages(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 accent-blue-600" />
+                <span><strong>更新同题题目截图及题干</strong>（修复旧版截断、跨页题图）。仅勾选时才用文件里的全部题目图片和题干替换现有版本；未勾选时保留已有题图。个人复盘、掌握状态及答题历史不受影响。</span>
               </label>}
               {!result && <button type="button" onClick={commit} disabled={busy}
                 className="w-full mt-3 py-2.5 rounded-lg bg-blue-600 text-white font-bold disabled:opacity-60">
@@ -87,7 +92,7 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
             </div>
           )}
           {result && <p role="status" className="text-sm flex gap-2 items-center text-green-700 bg-green-50 rounded-xl p-3">
-            <CheckCircle2 size={18}/> 新导入 {result.added} 道，重新加入第一轮 {result.restored} 道，原本就在列表中 {result.reordered} 道，补充原题截图 {result.thumbnailsAdded} 道，更新已有解析 {result.analysisUpdated || 0} 道。个人复盘与练习记录均保留。
+            <CheckCircle2 size={18}/> 新导入 {result.added} 道，重新加入第一轮 {result.restored} 道，原本就在列表中 {result.reordered} 道，补齐原题截图 {result.thumbnailsAdded} 道，替换旧题截图 {result.questionImagesUpdated || 0} 道，更新已有解析 {result.analysisUpdated || 0} 道。个人复盘与练习记录均保留。
           </p>}
           {error && <div role="alert" className="text-sm text-red-700 bg-red-50 rounded-xl p-3 flex items-start gap-2"><AlertTriangle size={18} className="shrink-0"/>{error}</div>}
           <section className="border-t border-gray-100 pt-4">
