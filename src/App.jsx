@@ -5,6 +5,7 @@ import { LIST_CONTEXT_EVENT, readMistakeListState, writeMistakeListState, notify
 import { toggleNextRound, toggleMastered as toggleReviewMastered } from './reviewRoundsPatch';
 import { db } from './db';
 import ImmersiveNoteReader from './ImmersiveNoteReader';
+import NoteOutlineMenu from './NoteOutlineMenu';
 import { exportCompleteBackup, restoreCompleteBackup } from './fullBackup';
 import { addFirstRoundMember, migrateLegacyFirstRoundMembership } from './firstRoundMembership';
 import {
@@ -1701,6 +1702,7 @@ function NoteEditor({ nodeId, onBack, onNavigate, onExport }) {
   // [新增] 文本编辑相关状态
   const [text, setText] = useState('');
   const [isPreview, setIsPreview] = useState(true); // 默认开启预览模式，方便查看
+  const markdownBodyRef = useRef(null);
   const [immersiveOpen, setImmersiveOpen] = useState(false);
   const readerOwnedFullscreen = useRef(false);
   const closeImmersive = useCallback((exitNative = true) => {
@@ -1772,7 +1774,7 @@ function NoteEditor({ nodeId, onBack, onNavigate, onExport }) {
   return (
     <div className="flex flex-col h-full bg-white">
       {/* 顶部导航栏 */}
-      <div className="p-4 border-b border-gray-100 flex justify-between items-center sticky top-0 bg-white z-10">
+      <div className="shrink-0 p-3 sm:p-4 border-b border-gray-100 flex justify-between items-center bg-white z-30">
         <div className="flex items-center gap-3 flex-1 mr-4 overflow-hidden">
            <button onClick={onBack} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500" title="返回上一级">
              <ArrowUpLeft size={20}/>
@@ -1797,6 +1799,16 @@ function NoteEditor({ nodeId, onBack, onNavigate, onExport }) {
         <button onClick={handleDeleteNote} className="text-red-400 hover:bg-red-50 p-2 rounded-full"><Trash2 size={20}/></button>
       </div>
 
+      {/* 工具栏独立于滚动正文，目录和沉浸阅读始终处于可点击的位置。 */}
+      <div className="shrink-0 flex items-center justify-end gap-2 px-3 py-2 bg-white border-b border-gray-100 z-30">
+        <NoteOutlineMenu contentRef={markdownBodyRef} noteId={nodeId}
+          sourceVersion={text} enabled={isPreview}/>
+        <button type="button" onClick={openImmersive} title="随时进入沉浸阅读" aria-label="沉浸阅读"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white hover:bg-indigo-700">
+          <Maximize size={16}/><span>沉浸阅读</span>
+        </button>
+      </div>
+
       {/* 标签栏 */}
       {note.type === 'file' && (
         <div className="px-6 py-2 flex flex-wrap items-center gap-2 border-b border-gray-50">
@@ -1816,15 +1828,12 @@ function NoteEditor({ nodeId, onBack, onNavigate, onExport }) {
                <div className="flex bg-gray-100 p-1 rounded-lg text-xs font-bold">
                   <button onClick={() => setIsPreview(false)} className={cn("px-3 py-1 rounded-md transition-all", !isPreview ? "bg-white shadow text-blue-600" : "text-gray-500")}>编辑</button>
                   <button onClick={() => { setIsPreview(true); handleTextSave(); }} className={cn("px-3 py-1 rounded-md transition-all", isPreview ? "bg-white shadow text-blue-600" : "text-gray-500")}>预览</button>
-                  <button type="button" onClick={openImmersive} title="沉浸式全屏阅读（Esc退出）" aria-label="沉浸式全屏阅读"
-                    className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition">
-                    <Maximize size={15}/><span className="hidden sm:inline">沉浸阅读</span>
-                  </button>
+                  
                </div>
             </div>
 
             {isPreview ? (
-              <div 
+              <div ref={markdownBodyRef} 
     className="w-full p-4 bg-white border border-gray-200 rounded-xl min-h-[120px] prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2 prose-pre:bg-gray-100 prose-pre:text-gray-800 prose-code:text-gray-800 transition"
 >
                  {text ? (
@@ -1867,7 +1876,8 @@ function NoteEditor({ nodeId, onBack, onNavigate, onExport }) {
         <ImmersiveNoteReader
           noteId={nodeId}
           title={note.title}
-          body={text ? <MarkdownView assets={note.assets || {}}>{text}</MarkdownView> : <p className="text-gray-400">此笔记暂无正文，请退出阅读后编辑。</p>}
+          outlineVersion={text}
+           body={text ? <MarkdownView assets={note.assets || {}}>{text}</MarkdownView> : <p className="text-gray-400">此笔记暂无正文，请退出阅读后编辑。</p>}
           images={note.content || []}
           prevId={prevId}
           nextId={nextId}
