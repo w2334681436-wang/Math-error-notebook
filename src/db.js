@@ -119,6 +119,20 @@ db.version(8).stores({
   restoreStaging: '++id, table'
 });
 
+
+// v9: look up incremental imports by (subject, source ID) instead of scanning
+// every large mistake record and its embedded screenshots on each import.
+// This is an additive index only: no source records are rewritten or deleted.
+db.version(9).stores({
+  mistakes: '++id, title, createdAt, subjectId, [subjectId+importKey]',
+  notes: '++id, parentId, title, type, *tags, order, [parentId+order]',
+  subjects: '++id, name',
+  mistakeCards: 'id, subjectId, createdAtMs, updatedAtMs, title, *tokens, [subjectId+createdAtMs]',
+  reviewRoundItems: '++id, subjectId, roundNo, mistakeId, order, decidedAt, [subjectId+roundNo+order], [subjectId+roundNo+mistakeId]',
+  reviewRoundExclusions: '++id, subjectId, roundNo, mistakeId, removedAt, [subjectId+roundNo], [subjectId+roundNo+mistakeId]',
+  restoreStaging: '++id, table'
+});
+
 function sanitizeMistakeRecord(record) {
   if (!record || typeof record !== 'object') return record;
   const copy = { ...record };
