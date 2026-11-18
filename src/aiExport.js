@@ -1,4 +1,5 @@
 import { Zip, ZipPassThrough, strToU8 } from 'fflate';
+import { getStoredQuestionImages } from './mistakePackImages';
 
 const TEXT_MIME = 'text/plain;charset=utf-8';
 const ZIP_MIME = 'application/zip';
@@ -57,6 +58,7 @@ function imageExtension(mime = '') {
 }
 
 function getStoredImages(record, pluralKey, legacyKey) {
+  if (pluralKey === 'questionImages') return getStoredQuestionImages(record);
   const candidates = [];
   if (Array.isArray(record?.[pluralKey])) candidates.push(...record[pluralKey]);
   if (record?.[legacyKey]) candidates.push(record[legacyKey]);
