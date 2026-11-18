@@ -773,6 +773,11 @@ const handleImport = async (e) => {
             </span>
           </button>
 
+          {activeTab === 'mistakes' && (
+            <button type="button" onClick={() => setIndexHealth(current => current || { manual: true })}
+              className="px-2 py-2 rounded-full bg-amber-50 text-amber-800 shrink-0 text-xs font-semibold"
+              title="错题列表加载异常时检查、修复轻量索引（不删除原题）">数据修复</button>
+          )}
           <button onClick={handleExport} disabled={backupBusy} className="p-2 hover:bg-gray-100 rounded-full text-gray-500 shrink-0 disabled:opacity-40" title="流式导出所有科目、错题图片、解析和图文笔记为可恢复的 .mathbackup">
             <Download size={20} />
           </button>
@@ -802,7 +807,9 @@ const handleImport = async (e) => {
           <span className="flex-1 min-w-[170px]">
             {indexHealth.error
               ? `错题索引检查失败：${indexHealth.error}`
-              : `发现错题 ${indexHealth.mistakeCount} 条、索引 ${indexHealth.cardCount} 条，可能导致列表缺失或加载异常。`}
+              : indexHealth.manual
+                ? '可以检查并修复轻量搜索索引；这个操作不删除原题和个人复盘。'
+                : `发现错题 ${indexHealth.mistakeCount} 条、索引 ${indexHealth.cardCount} 条，可能导致列表缺失或加载异常。`}
             请先点上方的下载按钮备份，再尝试修复。
           </span>
           <button type="button" onClick={handleRepairIndex} disabled={indexRepairBusy}
