@@ -2,6 +2,7 @@
 import {
   getSelectedReviewRound,
 } from './reviewRoundActions';
+import { getStoredQuestionImages } from './mistakePackImages';
 
 export const MISTAKE_PAGE_SIZE = 20;
 export const MISTAKE_SORT_STORAGE_PREFIX = 'mathNotebook.mistakeListReversed.';
@@ -20,7 +21,7 @@ function toTime(value) {
 }
 
 function getQuestionImages(mistake) {
-  return mistake?.questionImages || (mistake?.questionImg ? [mistake.questionImg] : []);
+  return getStoredQuestionImages(mistake);
 }
 
 function getAnalysisImages(mistake) {
@@ -129,6 +130,32 @@ export async function rebuildAllMistakeCards(db) {
   });
 }
 
+// Recover derived index entries in tiny independent writes; never clear or
+// overwrite the user's original mistakes, pictures, edits or review history.
+// Safe to run again after an interruption or quota error.
+export async function repairMistakeCardIndex(db, onProgress = () => {}) {
+  const sourceKeys = await db.mistakes.toCollection().primaryKeys();
+  const cardKeys = await db.mistakeCards.toCollection().primaryKeys();
+  const sourceSet = new Set(sourceKeys.map(String));
+  const cardSet = new Set(cardKeys.map(String));
+  const missing = sourceKeys.filter(key => !cardSet.has(String(key)));
+  const stale = cardKeys.filter(key => !sourceSet.has(String(key)));
+  let completed = 0;
+  for (const id of missing) {
+    const record = await db.mistakes.get(id);
+    if (record) await db.mistakeCards.put(buildMistakeCard(record));
+    completed++;
+    onProgress({ completed, total: missing.length, stage: 'repair' });
+    if (completed % 4 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  // These are search-index entries only. The underlying original mistakes
+  // are never removed, including if one imported pack was interrupted.
+  for (let offset = 0; offset < stale.length; offset += 100) {
+    await db.mistakeCards.bulkDelete(stale.slice(offset, offset + 100));
+  }
+  return { repaired: completed, removedStaleCards: stale.length };
+}
+
 export async function refreshMistakeCard(db, mistakeId) {
   const mistake = await db.mistakes.get(mistakeId);
   if (!mistake) {
@@ -144,31 +171,19 @@ async function queryFirstRoundCards(db, subjectId, q, offset, limit, reversed) {
     .between([subjectId, 1, 0], [subjectId, 1, Number.MAX_SAFE_INTEGER])
     .toArray();
   const memberIds = new Set(firstRound.map(row => String(row.mistakeId)));
+  if (!memberIds.size) return [];
 
-  if (!q) {
-    const collection = db.mistakeCards
-      .where('[subjectId+createdAtMs]')
-      .between([subjectId, 0], [subjectId, Number.MAX_SAFE_INTEGER]);
-
-    const orderedCollection = reversed ? collection : collection.reverse();
-
-    const cards = await orderedCollection.toArray();
-    return cards
-      .filter(card => memberIds.has(String(card.id)))
-      .slice(offset, offset + limit);
-  }
-
-  // tokens 有容量上限，不能用它排除长解析末尾、英文子串等合法命中。
-  const candidates = await db.mistakeCards.where('subjectId').equals(subjectId).toArray();
-  return candidates
-    .filter(card => memberIds.has(String(card.id)))
-    .filter(card => cardMatchesKeyword(card, q))
-    .sort((a, b) => {
-      const at = a.createdAtMs || 0;
-      const bt = b.createdAtMs || 0;
-      return reversed ? at - bt : bt - at;
-    })
-    .slice(offset, offset + limit);
+  // Do not call toArray() for every card before taking a 20-card page.
+  // IndexedDB cursors short-circuit at offset + limit, even when filtering.
+  // Search still covers the WHOLE current round, not only the visible page.
+  const collection = db.mistakeCards.where('[subjectId+createdAtMs]')
+    .between([subjectId, 0], [subjectId, Number.MAX_SAFE_INTEGER]);
+  const ordered = reversed ? collection : collection.reverse();
+  return ordered
+    .filter(card => memberIds.has(String(card.id)) && cardMatchesKeyword(card, q))
+    .offset(offset)
+    .limit(limit)
+    .toArray();
 }
 
 async function queryRoundCards(db, subjectId, roundNo, q, offset, limit, reversed) {
@@ -178,6 +193,15 @@ async function queryRoundCards(db, subjectId, roundNo, q, offset, limit, reverse
     .toArray();
 
   if (items.length === 0) return [];
+
+  // For an unfiltered list, fetch only the requested page of card bodies.
+  // Round member rows are tiny and retain the complete, user-defined ordering.
+  if (!q) {
+    const ordered = reversed ? [...items].reverse() : items;
+    const pageItems = ordered.slice(offset, offset + limit);
+    return (await db.mistakeCards.bulkGet(pageItems.map(item => item.mistakeId)))
+      .filter(card => card && card.subjectId === subjectId);
+  }
 
   const ids = [...new Set(items.map(item => item.mistakeId))];
   const cards = (await db.mistakeCards.bulkGet(ids))
