@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getImportedQuestionImages } from './mistakePackImages.js';
+import { getImportedQuestionImages, getStoredQuestionImages } from './mistakePackImages.js';
 
 test('all cross-page screenshots import in question order instead of just the thumbnail', () => {
   const item = {
@@ -23,4 +23,23 @@ test('unreferenced attachments are appended once and identical image data is ded
 
 test('no screenshots produces an empty list without affecting text-only questions', () => {
   assert.deepEqual(getImportedQuestionImages({ questionMarkdown: '普通文字', questionAssets: {} }), []);
+});
+
+
+test('compact imported mistakes display all original screenshots without duplicated legacy fields', () => {
+  const record = {
+    questionMarkdown: '![原题](note-asset:first)\n![跨页](note-asset:second)',
+    questionAssets: { first: 'data:image/png;base64,AAAA', second: 'data:image/png;base64,BBBB' }
+  };
+  assert.deepEqual(getStoredQuestionImages(record), ['data:image/png;base64,AAAA', 'data:image/png;base64,BBBB']);
+});
+
+test('legacy manually uploaded screenshots still take precedence when present', () => {
+  const record = {
+    questionImages: ['one.jpg', 'two.jpg'],
+    questionImg: 'one.jpg',
+    questionAssets: { original: 'new.jpg' }
+  };
+  assert.deepEqual(getStoredQuestionImages(record), ['one.jpg', 'two.jpg']);
+  assert.deepEqual(getStoredQuestionImages({ questionImg: 'single.jpg' }), ['single.jpg']);
 });
