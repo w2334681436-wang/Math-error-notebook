@@ -1,7 +1,7 @@
 // 独立的错题增量导入协议；绝不清空或替换现有数据。
 import { buildMistakeCard } from './searchIndex';
 import { addFirstRoundMember } from './firstRoundMembership';
-import { getImportedQuestionImages } from './mistakePackImages';
+import { getImportedQuestionImages, getStoredQuestionImages } from './mistakePackImages';
 
 export const MISTAKE_PACK_FORMAT = 'MathNotebookMistakePack';
 const MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
@@ -73,85 +73,91 @@ export async function parseMistakePack(file) {
   return { subject: typeof data.subject === 'string' ? data.subject.trim() : '', items };
 }
 
+// Each mistake commits independently: a slow image or quota error never leaves
+// an uncommitted 20-question transaction blocking all other reads. A retry is
+// safe because the indexed importKey identifies previously committed questions.
 export async function addMistakePack(db, pack, subjectId, subjectName = '', options = {}) {
   if (!subjectId) throw new Error('请先选择导入的科目');
   if (pack.subject && subjectName && pack.subject !== subjectName) {
     throw new Error('错题包科目为「' + pack.subject + '」，当前选择的是「' + subjectName + '」，请先切换科目');
   }
-  // 第一轮成员已经真正存储于 reviewRoundItems；再次导入已移出的题就重新创建成员行。
-  return db.transaction('rw', db.mistakes, db.mistakeCards, db.reviewRoundItems, async () => {
-    const known = new Map();
-    await db.mistakes.where('subjectId').equals(subjectId).each(record => {
-      if (record.importKey) known.set(record.importKey, record.id);
-    });
 
-    let added = 0, restored = 0, reordered = 0, thumbnailsAdded = 0, analysisUpdated = 0, questionImagesUpdated = 0;
-    const now = Date.now();
-    for (let i = 0; i < pack.items.length; i++) {
-      const item = pack.items[i];
-      const importKey = MISTAKE_PACK_FORMAT + ':' + item.sourceId;
-      const importedImages = getImportedQuestionImages(item);
-      // 文件中先出现的题先导入，列表默认按 createdAt 倒序，因此末题显示在最上面。
-      const createdAt = new Date(now - (pack.items.length - 1 - i) * 1000);
-      const existingId = known.get(importKey);
-      if (existingId !== undefined) {
-        const prior = await db.mistakes.get(existingId);
-        if (!prior) {
-          known.delete(importKey);
-          throw new Error('原错题记录缺失，请检查数据库一致性后重新导入');
+  let added = 0, restored = 0, reordered = 0;
+  let thumbnailsAdded = 0, analysisUpdated = 0, questionImagesUpdated = 0;
+  const now = Date.now();
+  const total = pack.items.length;
+
+  for (let i = 0; i < total; i++) {
+    const item = pack.items[i];
+    const importKey = MISTAKE_PACK_FORMAT + ':' + item.sourceId;
+    const createdAt = new Date(now - (total - 1 - i) * 1000);
+    try {
+      await db.transaction('rw', db.mistakes, db.mistakeCards, db.reviewRoundItems, async () => {
+        const prior = await db.mistakes
+          .where('[subjectId+importKey]')
+          .equals([subjectId, importKey])
+          .first();
+
+        if (prior) {
+          const updates = { createdAt };
+          if (options.replaceExistingAnalysis === true) {
+            updates.analysisText = item.analysisText;
+            updates.analysisAssets = item.analysisAssets;
+            updates.updatedAt = new Date();
+            analysisUpdated++;
+          }
+
+          const importedImages = getImportedQuestionImages(item);
+          if (options.replaceExistingQuestionImages === true && importedImages.length > 0) {
+            // Keep the original image ONCE in questionAssets.
+            // All views/exporters can reconstruct the ordered image list.
+            updates.questionAssets = item.questionAssets;
+            updates.questionThumbnailAssetId = item.questionThumbnailAssetId;
+            updates.questionImages = [];
+            updates.questionImg = null;
+            updates.questionMarkdown = item.questionMarkdown;
+            updates.updatedAt = new Date();
+            questionImagesUpdated++;
+          } else if (getStoredQuestionImages(prior).length === 0 && importedImages.length > 0) {
+            updates.questionAssets = item.questionAssets;
+            updates.questionThumbnailAssetId = item.questionThumbnailAssetId;
+            updates.questionImages = [];
+            updates.questionImg = null;
+            thumbnailsAdded++;
+          }
+          await db.mistakes.update(prior.id, updates);
+          await db.mistakeCards.put(buildMistakeCard({ ...prior, ...updates }));
+          const wasReadded = await addFirstRoundMember(db, { ...prior, ...updates }, true);
+          if (wasReadded) restored++;
+          else reordered++;
+          return;
         }
 
-        // 不再去恢复“隐藏记录”；先前从本轮移除则新建一条独立的轮次成员记录。
-        const updates = { createdAt };
-        // Explicit opt-in: refresh AI explanation without overwriting a learner's
-        // personal reflections, mastery, history, or the existing question.
-        if (options.replaceExistingAnalysis === true) {
-          updates.analysisText = item.analysisText;
-          updates.analysisAssets = item.analysisAssets; // 更新 AI 图解时一并清除旧版重复截图资源
-          updates.updatedAt = new Date();
-          analysisUpdated++;
-        }
-        // 旧题默认保留原题截图；用户单独勾选时才以完整题图列表替换旧版不完整题图。
-        const pictures = Array.isArray(prior.questionImages) ? prior.questionImages.filter(Boolean) : [];
-        const hasPicture = pictures.length > 0 || Boolean(prior.questionImg);
-        if (options.replaceExistingQuestionImages === true && importedImages.length > 0) {
-          updates.questionImages = importedImages;
-          updates.questionImg = importedImages[0];
-          updates.questionAssets = item.questionAssets;
-          updates.questionMarkdown = item.questionMarkdown;
-          updates.updatedAt = new Date();
-          questionImagesUpdated++;
-        } else if (!hasPicture && importedImages.length > 0) {
-          // 完全没有旧题图时，自动补齐所有截图，而不是只补封面一张。
-          updates.questionImages = importedImages;
-          updates.questionImg = importedImages[0];
-          updates.questionAssets = item.questionAssets;
-          thumbnailsAdded++;
-        }
-        await db.mistakes.update(existingId, updates);
-        await db.mistakeCards.put(buildMistakeCard({ ...prior, ...updates }));
-        const wasReadded = await addFirstRoundMember(db, { ...prior, ...updates }, true);
-        if (wasReadded) restored++;
-        else reordered++;
-        continue;
-      }
-
-      const record = {
-        subjectId, importKey, title: item.title,
-        questionMarkdown: item.questionMarkdown, questionAssets: item.questionAssets,
-        questionImages: importedImages,
-        questionImg: importedImages[0] || null,
-        analysisText: item.analysisText, analysisAssets: item.analysisAssets,
-        analysisImages: [], reflection: item.reflection, tags: item.tags,
-        isMastered: false, reviewLogs: [], reviewCount: 0, reviewTimes: 0,
-        createdAt, updatedAt: createdAt
-      };
-      const id = await db.mistakes.add(record);
-      await db.mistakeCards.put(buildMistakeCard({ ...record, id }));
-      await addFirstRoundMember(db, { ...record, id });
-      added++;
-      known.set(importKey, id);
+        const record = {
+          subjectId, importKey, title: item.title,
+          questionMarkdown: item.questionMarkdown,
+          questionAssets: item.questionAssets,
+          questionThumbnailAssetId: item.questionThumbnailAssetId,
+          // Avoid storing base64 pictures a second and third time.
+          // Legacy/manual records still support questionImages/questionImg.
+          analysisText: item.analysisText, analysisAssets: item.analysisAssets,
+          analysisImages: [], reflection: item.reflection, tags: item.tags,
+          isMastered: false, reviewLogs: [], reviewCount: 0, reviewTimes: 0,
+          createdAt, updatedAt: createdAt,
+        };
+        const id = await db.mistakes.add(record);
+        await db.mistakeCards.put(buildMistakeCard({ ...record, id }));
+        await addFirstRoundMember(db, { ...record, id });
+        added++;
+      });
+      options.onProgress?.({ completed: i + 1, total, stage: 'import' });
+      if ((i + 1) % 3 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+    } catch (error) {
+      const reason = error?.name === 'QuotaExceededError'
+        ? '本地存储空间不足，请先备份原有错题，切勿清除网站数据'
+        : (error?.message || String(error));
+      throw new Error(`第${i + 1}题导入失败：${reason}。前${i}题已保存，重新导入会自动识别已有题目，不会重复新增。`);
     }
-    return { added, restored, reordered, thumbnailsAdded, analysisUpdated, questionImagesUpdated };
-  });
+  }
+  return { added, restored, reordered, thumbnailsAdded, analysisUpdated, questionImagesUpdated };
 }
