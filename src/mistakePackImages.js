@@ -19,3 +19,18 @@ export function getImportedQuestionImages(item) {
   for (const id of Object.keys(assets)) add(id);
   return images;
 }
+
+
+// Both manually uploaded pictures and AI-pack assets are valid original images.
+// New AI imports store each base64 image only in questionAssets; old records
+// still use questionImages/questionImg. Keep both shapes readable.
+export function getStoredQuestionImages(record) {
+  const existing = Array.isArray(record?.questionImages)
+    ? record.questionImages.filter(value => typeof value === 'string' && value.trim())
+    : [];
+  if (existing.length) return existing;
+  if (typeof record?.questionImg === 'string' && record.questionImg.trim()) {
+    return [record.questionImg];
+  }
+  return getImportedQuestionImages(record);
+}
