@@ -4,6 +4,7 @@ import Dexie from 'dexie';
 import { LIST_CONTEXT_EVENT, readMistakeListState, writeMistakeListState, notifyListContextChanged, clearMistakeNavigationState } from './mistakeListState';
 import { toggleNextRound, toggleMastered as toggleReviewMastered } from './reviewRoundsPatch';
 import { db } from './db';
+import { getStoredQuestionImages } from './mistakePackImages';
 import ImmersiveNoteReader from './ImmersiveNoteReader';
 import NoteOutlineMenu from './NoteOutlineMenu';
 import { exportCompleteBackup, restoreCompleteBackup } from './fullBackup';
@@ -16,6 +17,7 @@ import {
   getSelectedReviewRound,
   queryMistakeCards,
   rebuildAllMistakeCards,
+  repairMistakeCardIndex,
   refreshMistakeCard
 } from './searchIndex';
 import { useLiveQuery } from 'dexie-react-hooks';
@@ -160,6 +162,9 @@ function App() {
   const [showAiExportDialog, setShowAiExportDialog] = useState(false);
   const [showMistakeImportDialog, setShowMistakeImportDialog] = useState(false);
   const [importRefreshCounter, setImportRefreshCounter] = useState(0);
+  const [indexHealth, setIndexHealth] = useState(null);
+  const [indexRepairBusy, setIndexRepairBusy] = useState(false);
+  const [indexRepairProgress, setIndexRepairProgress] = useState(null);
 
   // [新增] 科目管理逻辑
   const subjects = useLiveQuery(() => db.subjects.toArray()) || [];
@@ -187,20 +192,44 @@ function App() {
     }).catch(error => console.error(error));
   }, []);
 
-  // 索引自检：防止旧数据、导入数据、异常升级后 mistakeCards 为空。
-// 这里只重建轻量索引，不动原始 mistakes 图片数据。
-useEffect(() => {
-  const checkMistakeCards = async () => {
-    const [mistakeCount, cardCount] = await db.transaction('r', db.mistakes, db.mistakeCards, () =>
-      Promise.all([db.mistakes.count(), db.mistakeCards.count()]));
+  // Detect a missing derived search index without launching a full-library
+  // rebuild every time the application starts. Rebuilding used to load all
+  // base64 pictures on startup and could make the whole app appear frozen.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const [mistakeCount, cardCount] = await Promise.all([
+          db.mistakes.count(), db.mistakeCards.count(),
+        ]);
+        if (!alive) return;
+        setIndexHealth(mistakeCount !== cardCount ? { mistakeCount, cardCount } : null);
+      } catch (error) {
+        console.error('检查错题索引失败', error);
+        if (alive) setIndexHealth({ error: error?.message || String(error) });
+      }
+    })();
+    return () => { alive = false; };
+  }, [importRefreshCounter]);
 
-    if (mistakeCount !== cardCount) {
-      await rebuildAllMistakeCards(db);
+  const handleRepairIndex = async () => {
+    if (indexRepairBusy) return;
+    setIndexRepairBusy(true);
+    setIndexRepairProgress(null);
+    try {
+      // Only derived mistakeCards are repaired. Existing mistake records and
+      // all image/analysis/review fields are left untouched.
+      const result = await repairMistakeCardIndex(db, setIndexRepairProgress);
+      setIndexHealth(null);
+      setImportRefreshCounter(value => value + 1);
+      alert(`轻量索引已检查：修复 ${result.repaired} 项，清理无主索引 ${result.removedStaleCards} 项。原题及复盘未删除。`);
+    } catch (error) {
+      console.error('修复错题索引失败', error);
+      setIndexHealth({ error: error?.message || String(error) });
+    } finally {
+      setIndexRepairBusy(false);
     }
   };
-
-  checkMistakeCards();
-}, []);
 
   const handleAddSubject = async () => {
     const name = prompt("请输入新科目名称（如：英语、政治）：");
@@ -768,6 +797,20 @@ const handleImport = async (e) => {
         </div>
       </nav>
 
+      {activeTab === 'mistakes' && indexHealth && (
+        <div role="alert" className="shrink-0 bg-amber-50 border-b border-amber-200 px-3 py-2 text-xs text-amber-900 flex flex-wrap items-center gap-2">
+          <span className="flex-1 min-w-[170px]">
+            {indexHealth.error
+              ? `错题索引检查失败：${indexHealth.error}`
+              : `发现错题 ${indexHealth.mistakeCount} 条、索引 ${indexHealth.cardCount} 条，可能导致列表缺失或加载异常。`}
+            请先点上方的下载按钮备份，再尝试修复。
+          </span>
+          <button type="button" onClick={handleRepairIndex} disabled={indexRepairBusy}
+            className="rounded-lg bg-amber-200 px-3 py-1.5 font-bold disabled:opacity-50">
+            {indexRepairBusy ? `修复中 ${indexRepairProgress?.completed || 0}/${indexRepairProgress?.total || '?'}` : '修复轻量索引'}
+          </button>
+        </div>
+      )}
       {/* 主内容区域 */}
       <div className="flex-1 overflow-hidden relative">
         {activeTab === 'mistakes' ? (
@@ -844,6 +887,7 @@ function MistakeWorkspace({ subjectId, roundNo, reversed, view, setView }) {
   const [currentMistakeId, setCurrentMistakeId] = useState(null);
   const [searchQuery, setSearchQuery] = useState(saved.keyword);
   const [visibleLimit, setVisibleLimit] = useState(saved.visibleLimit);
+  const [listRetry, setListRetry] = useState(0);
   const [highlightedMistakeId, setHighlightedMistakeId] = useState(null);
   const [navigating, setNavigating] = useState(false);
   const [relatedEditorTargetId, setRelatedEditorTargetId] = useState(null);
@@ -862,14 +906,29 @@ function MistakeWorkspace({ subjectId, roundNo, reversed, view, setView }) {
   const navigationLock = useRef(false);
   const progressRequestRef = useRef(0);
 
-  const queryKey = JSON.stringify([roundNo, reversed, searchQuery, visibleLimit]);
+  const queryKey = JSON.stringify([roundNo, reversed, searchQuery, visibleLimit, listRetry]);
   const page = useLiveQuery(async () => {
-    // 多读一条判断是否还有下一页，避免刚好 20/40 条时出现不存在的“下一题”。
-    const cards = await queryMistakeCards(db, {
-      subjectId, roundNo, reversed, keyword: searchQuery, offset: 0, limit: visibleLimit + 1,
-    });
-    return { key: queryKey, cards: cards.slice(0, visibleLimit), hasMore: cards.length > visibleLimit };
-  }, [subjectId, roundNo, reversed, searchQuery, visibleLimit]);
+    // Read only the requested page. A broken database must show a useful
+    // error instead of leaving the full app on a permanent loading spinner.
+    let timer;
+    try {
+      const cards = await Promise.race([
+        queryMistakeCards(db, {
+          subjectId, roundNo, reversed, keyword: searchQuery,
+          offset: 0, limit: visibleLimit + 1,
+        }),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('数据库读取超过15秒，可能存在未完成的写入或存储空间问题')), 15000);
+        }),
+      ]);
+      return { key: queryKey, cards: cards.slice(0, visibleLimit), hasMore: cards.length > visibleLimit };
+    } catch (error) {
+      console.error('加载错题列表失败', error);
+      return { key: queryKey, cards: [], hasMore: false, error: error?.message || String(error) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }, [subjectId, roundNo, reversed, searchQuery, visibleLimit, listRetry]);
   const listReady = page?.key === queryKey;
   if (listReady) lastPageRef.current = page;
   const displayPage = lastPageRef.current;
@@ -1037,14 +1096,22 @@ function MistakeWorkspace({ subjectId, roundNo, reversed, view, setView }) {
             notifyListContextChanged(subjectId);
           }} className="rounded-full border border-indigo-200 bg-indigo-50 text-indigo-700 px-3 py-2 text-xs font-bold">{reversed ? '还原顺序' : '倒序显示'}</button>
         </div>
-        <MistakeList mistakes={displayPage?.cards} highlightedId={highlightedMistakeId} scrollRoot={scrollerRef} onAdd={() => { saveListPosition(); setCurrentMistakeId(null); setView('add'); }} onOpen={id => {
+        {displayPage?.error ? (
+          <div role="alert" className="p-5 mt-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 space-y-3">
+            <p className="font-bold">错题列表暂时无法读取，原始数据不一定丢失</p>
+            <p className="text-sm break-words">{displayPage.error}</p>
+            <p className="text-xs">请勿清除站点数据或卸载应用。先用顶部下载按钮尝试导出完整备份，再使用上方的索引修复入口。</p>
+            <button type="button" onClick={() => setListRetry(value => value + 1)}
+              className="bg-amber-200 rounded-lg px-3 py-2 text-xs font-semibold">重试加载</button>
+          </div>
+        ) : <MistakeList mistakes={displayPage?.cards} highlightedId={highlightedMistakeId} scrollRoot={scrollerRef} onAdd={() => { saveListPosition(); setCurrentMistakeId(null); setView('add'); }} onOpen={id => {
           if (!listReady) return;
           progressRequestRef.current += 1;
           saveListPosition();
           setHighlightedMistakeId(id);
           setCurrentMistakeId(id);
           setView('detail');
-        }} onLoadMore={loadMore} hasMore={hasMore}/>
+        }} onLoadMore={loadMore} hasMore={hasMore}/>}
         <div className="text-center text-[10px] text-gray-300 mt-4">Build: {APP_VERSION}</div>
       </>}
       {view === 'add' && <MistakeForm mode="add" subjectId={subjectId} onFinish={() => setView('list')} onCancel={() => setView('list')}/>}
@@ -1896,7 +1963,7 @@ function MistakeThumb({ mistakeId, imageCount }) {
     [mistakeId]
   );
 
-  const images = mistake?.questionImages || (mistake?.questionImg ? [mistake.questionImg] : []);
+  const images = getStoredQuestionImages(mistake);
   const firstImg = images[0];
 
   if (!firstImg) {
@@ -2394,11 +2461,7 @@ function RelatedQuestionForm({ initialData, defaultTitle, onSave, onCancel, onDe
 }
 
 function getQuestionImages(question) {
-  const images = Array.isArray(question?.questionImages)
-    ? question.questionImages.filter(image => typeof image === 'string' && image.trim())
-    : [];
-  if (images.length > 0) return images;
-  return typeof question?.questionImg === 'string' && question.questionImg.trim() ? [question.questionImg] : [];
+  return getStoredQuestionImages(question);
 }
 
 // 原题、相关题和悬浮面板统一：有图片只展示图片，无图片才展示 Markdown。

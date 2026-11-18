@@ -10,13 +10,14 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
   const [fileName, setFileName] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(null);
   const [result, setResult] = useState(null);
   const [copied, setCopied] = useState(false);
   const [replaceExistingAnalysis, setReplaceExistingAnalysis] = useState(false);
   const [replaceExistingQuestionImages, setReplaceExistingQuestionImages] = useState(false);
 
   const load = async (file) => {
-    setError(''); setResult(null); setPack(null); setFileName(file?.name || '');
+    setError(''); setResult(null); setPack(null); setProgress(null); setFileName(file?.name || '');
     if (!file) return;
     try { setPack(await parseMistakePack(file)); }
     catch (e) { setError(e.message); }
@@ -40,9 +41,9 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
   };
   const commit = async () => {
     if (!pack || busy) return;
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setProgress({ completed: 0, total: pack.items.length });
     try {
-      const result = await addMistakePack(db, pack, subjectId, subjectName, { replaceExistingAnalysis, replaceExistingQuestionImages });
+      const result = await addMistakePack(db, pack, subjectId, subjectName, { replaceExistingAnalysis, replaceExistingQuestionImages, onProgress: setProgress });
       setResult(result);
       onImported?.(result);
     } catch (e) { setError(e.message || '导入失败'); }
@@ -87,8 +88,14 @@ export default function MistakeImportDialog({ subjectId, subjectName, onClose, o
               </label>}
               {!result && <button type="button" onClick={commit} disabled={busy}
                 className="w-full mt-3 py-2.5 rounded-lg bg-blue-600 text-white font-bold disabled:opacity-60">
-                {busy ? '正在导入…' : '确认导入 / 重新加入第一轮'}
+                {busy ? `正在导入 ${progress?.completed || 0}/${pack.items.length}…` : '确认导入 / 重新加入第一轮'}
               </button>}
+            </div>
+          )}
+          {busy && progress && (
+            <div role="status" aria-live="polite" className="text-xs text-blue-700 rounded-lg bg-blue-50 p-2">
+              已完成 {progress.completed}/{progress.total} 道。逐题保存，若中断可重新导入同一个文件继续。
+              <div className="h-1.5 mt-2 bg-blue-100 rounded-full overflow-hidden"><div className="h-full bg-blue-600" style={{ width: `${progress.total ? 100 * progress.completed / progress.total : 0}%` }} /></div>
             </div>
           )}
           {result && <p role="status" className="text-sm flex gap-2 items-center text-green-700 bg-green-50 rounded-xl p-3">
